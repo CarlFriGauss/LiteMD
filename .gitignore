@@ -1,0 +1,12 @@
+# Build artifacts & caches (kept strictly on D:\)
+/target/
+/src-tauri/target/
+/.cache/
+/dist/
+/node_modules/
+
+# OS & editor temporary files
+.DS_Store
+Thumbs.db
+*.log
+*.swp
