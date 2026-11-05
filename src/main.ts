@@ -1018,15 +1018,15 @@ function buildFontSelectOptions(
 async function refreshCustomThemesFromD(): Promise<void> {
   const entries = await listCustomThemesOnD();
   const nextCustom: Record<string, LiteMDThemeConfig> = {};
-  for (const [fileStem, jsonText] of entries) {
+  for (const rec of entries) {
     try {
-      const parsed = JSON.parse(jsonText) as Partial<LiteMDThemeConfig>;
+      const parsed = JSON.parse(rec.json) as Partial<LiteMDThemeConfig>;
       if (parsed && typeof parsed === 'object') {
         const merged = {
           ...cloneTheme(THEME_PRESETS['latex-academic']),
           ...parsed,
-          id: `custom:${fileStem}`,
-          name: parsed.name || fileStem,
+          id: `custom:${rec.name}`,
+          name: parsed.name || rec.name,
         };
         nextCustom[merged.id] = merged;
       }

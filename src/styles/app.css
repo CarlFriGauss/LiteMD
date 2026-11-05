@@ -577,6 +577,7 @@
 .litemd-math-block .katex,
 .litemd-math-inline .katex {
   font-family: var(--preview-font-math);
+  font-size: calc(1.06em * var(--math-scale, 1));
   color: var(--preview-math-color);
 }
 
