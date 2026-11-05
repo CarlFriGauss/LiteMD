@@ -21,6 +21,7 @@ export interface LiteMDThemeConfig {
   previewLineHeight: number;
   previewLetterSpacingEm: number;
   previewParaSpacingEm: number;
+  previewMathScale: number;
 
   // A.2 Page Geometry & Margins
   previewMarginYPx: number;
@@ -106,6 +107,7 @@ export const THEME_PRESETS: Record<string, LiteMDThemeConfig> = {
     previewLineHeight: 1.72,
     previewLetterSpacingEm: 0,
     previewParaSpacingEm: 1.05,
+    previewMathScale: 1.0,
     previewMarginYPx: 44,
     previewMarginXPx: 52,
     previewMaxWidthPx: 840,
@@ -160,6 +162,7 @@ export const THEME_PRESETS: Record<string, LiteMDThemeConfig> = {
     previewLineHeight: 1.76,
     previewLetterSpacingEm: 0.005,
     previewParaSpacingEm: 1.1,
+    previewMathScale: 1.0,
     previewMarginYPx: 46,
     previewMarginXPx: 54,
     previewMaxWidthPx: 820,
@@ -214,6 +217,7 @@ export const THEME_PRESETS: Record<string, LiteMDThemeConfig> = {
     previewLineHeight: 1.72,
     previewLetterSpacingEm: 0.005,
     previewParaSpacingEm: 1.05,
+    previewMathScale: 1.0,
     previewMarginYPx: 44,
     previewMarginXPx: 52,
     previewMaxWidthPx: 860,
@@ -268,6 +272,7 @@ export const THEME_PRESETS: Record<string, LiteMDThemeConfig> = {
     previewLineHeight: 1.7,
     previewLetterSpacingEm: 0.01,
     previewParaSpacingEm: 1.05,
+    previewMathScale: 1.0,
     previewMarginYPx: 42,
     previewMarginXPx: 48,
     previewMaxWidthPx: 880,
@@ -329,6 +334,7 @@ export function applyThemeToDOM(theme: LiteMDThemeConfig): void {
   s.setProperty('--preview-line-height', String(theme.previewLineHeight));
   s.setProperty('--preview-letter-spacing', `${theme.previewLetterSpacingEm}em`);
   s.setProperty('--preview-para-spacing', `${theme.previewParaSpacingEm}em`);
+  s.setProperty('--math-scale', String(theme.previewMathScale ?? 1.0));
 
   // Page Geometry & Margins
   s.setProperty('--preview-margin-y', `${theme.previewMarginYPx}px`);
