@@ -86,13 +86,28 @@ export function estimateVisualWrappedRows(line: string, maxCols: number): number
 }
 
 /**
+ * Builds per-line measurement blocks for `#editor-measurer` so the browser's native
+ * text layout engine computes the exact visual wrapped row count for every logical line.
+ */
+export function buildLineMeasurerHtml(raw: string): string {
+  const lines = raw.split('\n');
+  const out = new Array<string>(lines.length);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    out[i] = `<div class="litemd-measure-row">${line.length > 0 ? escapeHtml(line) : '\u200b'}</div>`;
+  }
+  return out.join('');
+}
+
+/**
  * Generates the gutter HTML containing logical line numbers (`1`, `2`, ...) and
  * subtle visual soft-wrap continuation markers (`↪`) for wrapped display rows.
  */
 export function buildSoftWrapGutterHtml(
   raw: string,
   softWrapEnabled: boolean,
-  effectiveCols: number
+  effectiveCols: number,
+  measuredRowsPerLine?: number[]
 ): { html: string; logicalLines: number; visualWrappedExtraRows: number } {
   const lines = raw.split('\n');
   const logicalLines = lines.length;
@@ -101,9 +116,14 @@ export function buildSoftWrapGutterHtml(
 
   for (let i = 0; i < logicalLines; i++) {
     const lineNum = i + 1;
-    const rows = softWrapEnabled
-      ? estimateVisualWrappedRows(lines[i], effectiveCols)
-      : 1;
+    let rows = 1;
+    if (softWrapEnabled) {
+      if (measuredRowsPerLine && measuredRowsPerLine[i] !== undefined && measuredRowsPerLine[i] > 0) {
+        rows = measuredRowsPerLine[i];
+      } else {
+        rows = estimateVisualWrappedRows(lines[i], effectiveCols);
+      }
+    }
 
     if (rows <= 1) {
       parts[i] = `<div class="litemd-gutter-row">${lineNum}</div>`;

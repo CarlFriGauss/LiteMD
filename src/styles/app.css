@@ -332,9 +332,10 @@
   border-right: 1px dashed rgba(128, 128, 128, 0.22);
 }
 
-/* Both backdrop and textarea share 100% identical box & font metrics */
+/* Backdrop, textarea, and line-wrap measurer share 100% identical box & font metrics */
 .litemd-editor-backdrop,
-.litemd-editor-textarea {
+.litemd-editor-textarea,
+.litemd-editor-measurer {
   margin: 0;
   padding: 18px 20px 120px 18px;
   width: 100%;
@@ -348,17 +349,34 @@
 }
 
 .litemd-editor-stage[data-soft-wrap="true"] .litemd-editor-backdrop,
-.litemd-editor-stage[data-soft-wrap="true"] .litemd-editor-textarea {
+.litemd-editor-stage[data-soft-wrap="true"] .litemd-editor-textarea,
+.litemd-editor-stage[data-soft-wrap="true"] .litemd-editor-measurer .litemd-measure-row {
   white-space: pre-wrap;
   overflow-wrap: break-word;
   word-break: break-word;
 }
 
 .litemd-editor-stage[data-soft-wrap="false"] .litemd-editor-backdrop,
-.litemd-editor-stage[data-soft-wrap="false"] .litemd-editor-textarea {
+.litemd-editor-stage[data-soft-wrap="false"] .litemd-editor-textarea,
+.litemd-editor-stage[data-soft-wrap="false"] .litemd-editor-measurer .litemd-measure-row {
   white-space: pre;
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.litemd-editor-measurer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+  overflow: hidden;
+}
+
+.litemd-measure-row {
+  min-height: calc(var(--editor-font-size) * var(--editor-line-height));
 }
 
 .litemd-editor-backdrop {
