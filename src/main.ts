@@ -20,6 +20,7 @@ import {
 } from './lib/renderer';
 import {
   highlightRawMarkdownForBackdrop,
+  buildLineMeasurerHtml,
   buildSoftWrapGutterHtml,
   tryExpandSlashCommand,
 } from './lib/editorHelpers';
@@ -57,6 +58,7 @@ interface AppState {
   studioOpen: boolean;
   activeInlineBlockIdx: number | null;
   theme: LiteMDThemeConfig;
+  customThemes: Record<string, LiteMDThemeConfig>;
   renderedBlocks: LogicalBlock[];
 }
 
@@ -72,6 +74,7 @@ const state: AppState = {
   studioOpen: false,
   activeInlineBlockIdx: null,
   theme: cloneTheme(THEME_PRESETS['latex-academic']),
+  customThemes: {},
   renderedBlocks: [],
 };
 
@@ -141,6 +144,7 @@ appRoot.innerHTML = `
         <div class="litemd-editor-scroll-viewport litemd-classic-scroll" id="editor-scroller">
           <div class="litemd-gutter" id="editor-gutter" aria-hidden="true"></div>
           <div class="litemd-editor-stage" id="editor-stage" data-soft-wrap="true">
+            <div class="litemd-editor-measurer" id="editor-measurer" aria-hidden="true"></div>
             <pre class="litemd-editor-backdrop" id="editor-backdrop" aria-hidden="true"></pre>
             <textarea
               class="litemd-editor-textarea"
@@ -211,6 +215,7 @@ const elSplitDivider = document.getElementById('split-divider')!;
 const elEditorScroller = document.getElementById('editor-scroller')!;
 const elEditorGutter = document.getElementById('editor-gutter')!;
 const elEditorStage = document.getElementById('editor-stage')!;
+const elEditorMeasurer = document.getElementById('editor-measurer')!;
 const elEditorBackdrop = document.getElementById('editor-backdrop')!;
 const elTextarea = document.getElementById('editor-textarea') as HTMLTextAreaElement;
 const elPreviewScroller = document.getElementById('preview-scroller')!;
@@ -242,16 +247,39 @@ const elInspectorControls = document.getElementById('inspector-controls')!;
 
 /**
  * Syncs the `<textarea>` height and backdrop/gutter so the outer `#editor-scroller`
- * handles all scrolling with a single classic scrollbar.
+ * handles all scrolling with a single classic scrollbar, and measures exact per-line
+ * wrapped row heights from `#editor-measurer` so gutter line numbers never drift.
  */
 function syncEditorBackdropAndGutter(): void {
   const raw = state.markdown;
   elEditorBackdrop.innerHTML = highlightRawMarkdownForBackdrop(raw);
 
-  // Compute effective character column width for soft-wrapping
   const wrapCh = state.theme.editorWrapColumnCh > 0 ? state.theme.editorWrapColumnCh : 92;
+  let measuredRowsPerLine: number[] | undefined;
+
+  if (state.theme.editorSoftWrapEnabled) {
+    elEditorMeasurer.innerHTML = buildLineMeasurerHtml(raw);
+    const singleRowPx = state.theme.editorFontSizePx * state.theme.editorLineHeight;
+    const children = elEditorMeasurer.children;
+    if (singleRowPx > 0 && children.length > 0) {
+      const firstH = (children[0] as HTMLElement).offsetHeight;
+      if (firstH > 0) {
+        measuredRowsPerLine = new Array<number>(children.length);
+        for (let i = 0; i < children.length; i++) {
+          const h = (children[i] as HTMLElement).offsetHeight;
+          measuredRowsPerLine[i] = Math.max(1, Math.round(h / singleRowPx));
+        }
+      }
+    }
+  }
+
   const { html: gutterHtml, logicalLines, visualWrappedExtraRows } =
-    buildSoftWrapGutterHtml(raw, state.theme.editorSoftWrapEnabled, wrapCh);
+    buildSoftWrapGutterHtml(
+      raw,
+      state.theme.editorSoftWrapEnabled,
+      wrapCh,
+      measuredRowsPerLine
+    );
 
   if (state.showLineNumbers) {
     elEditorGutter.innerHTML = gutterHtml;
@@ -791,6 +819,28 @@ elPreviewSheet.addEventListener('mouseout', () => {
   }
 });
 
+// Interactive GFM task-list checkbox toggling in the Preview Pane
+elPreviewSheet.addEventListener('change', (ev) => {
+  const target = ev.target as HTMLInputElement;
+  if (!target || !target.classList.contains('litemd-task-checkbox')) return;
+  const li = target.closest('li[data-line]');
+  if (!li) return;
+  const lineIdx = Number(li.getAttribute('data-line'));
+  const lines = state.markdown.split('\n');
+  if (lineIdx >= 0 && lineIdx < lines.length) {
+    lines[lineIdx] = lines[lineIdx].replace(
+      /^(\s*[-*+]\s+\[)[ xX](\])/,
+      `$1${target.checked ? 'x' : ' '}$2`
+    );
+    state.markdown = lines.join('\n');
+    elTextarea.value = state.markdown;
+    state.isDirty = true;
+    syncEditorBackdropAndGutter();
+    updateLivePreview();
+    syncToolbarAndTitle();
+  }
+});
+
 elPreviewSheet.addEventListener('click', (ev) => {
   if (!state.inspectorActive) return;
   ev.preventDefault();
@@ -845,6 +895,10 @@ function openInspectorMiniPalette(target: HTMLElement, x: number, y: number): vo
       <div class="litemd-control-row">
         <label>Display Box Border</label>
         <input type="color" data-inspect-color="previewMathBorder" value="${state.theme.previewMathBorder}" />
+      </div>
+      <div class="litemd-control-row">
+        <label>Math Scale (0.85x–1.35x)</label>
+        <input type="range" min="0.85" max="1.35" step="0.05" data-inspect-num="previewMathScale" value="${state.theme.previewMathScale}" />
       </div>
     `;
   } else if (tag === 'blockquote') {
@@ -961,14 +1015,43 @@ function buildFontSelectOptions(
     .join('');
 }
 
+async function refreshCustomThemesFromD(): Promise<void> {
+  const entries = await listCustomThemesOnD();
+  const nextCustom: Record<string, LiteMDThemeConfig> = {};
+  for (const [fileStem, jsonText] of entries) {
+    try {
+      const parsed = JSON.parse(jsonText) as Partial<LiteMDThemeConfig>;
+      if (parsed && typeof parsed === 'object') {
+        const merged = {
+          ...cloneTheme(THEME_PRESETS['latex-academic']),
+          ...parsed,
+          id: `custom:${fileStem}`,
+          name: parsed.name || fileStem,
+        };
+        nextCustom[merged.id] = merged;
+      }
+    } catch {
+      // Ignore malformed custom theme JSON
+    }
+  }
+  state.customThemes = nextCustom;
+  if (state.studioOpen) {
+    renderStudioDrawerControls();
+  }
+}
+
 function renderStudioDrawerControls(): void {
   const t = state.theme;
+  const allPresets = [
+    ...Object.values(THEME_PRESETS),
+    ...Object.values(state.customThemes),
+  ];
   elStudioBody.innerHTML = `
     <!-- Section 1: One-Click Theme Presets & D:\ JSON Persistence -->
     <div class="litemd-studio-section">
-      <div class="litemd-studio-section-title">1. Built-In Theme Presets</div>
+      <div class="litemd-studio-section-title">1. Built-In & Custom Theme Presets</div>
       <div class="litemd-preset-grid">
-        ${Object.values(THEME_PRESETS)
+        ${allPresets
           .map(
             (p) => `
           <button class="litemd-preset-card ${
@@ -1035,6 +1118,11 @@ function renderStudioDrawerControls(): void {
         <label>Paragraph Spacing</label>
         <input type="range" min="0.4" max="2.2" step="0.05" data-theme-num="previewParaSpacingEm" value="${t.previewParaSpacingEm}" />
         <span class="litemd-val-badge" data-badge="previewParaSpacingEm">${t.previewParaSpacingEm}em</span>
+      </div>
+      <div class="litemd-control-row">
+        <label>Math Scale</label>
+        <input type="range" min="0.85" max="1.35" step="0.02" data-theme-num="previewMathScale" value="${t.previewMathScale}" />
+        <span class="litemd-val-badge" data-badge="previewMathScale">${t.previewMathScale}x</span>
       </div>
     </div>
 
@@ -1165,12 +1253,13 @@ function renderStudioDrawerControls(): void {
     </div>
   `;
 
-  // Preset cards
+  // Preset cards (built-in + custom themes saved on D:\)
   elStudioBody.querySelectorAll<HTMLButtonElement>('[data-preset-id]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const presetId = btn.getAttribute('data-preset-id')!;
-      if (THEME_PRESETS[presetId]) {
-        state.theme = cloneTheme(THEME_PRESETS[presetId]);
+      const chosen = THEME_PRESETS[presetId] || state.customThemes[presetId];
+      if (chosen) {
+        state.theme = cloneTheme(chosen);
         applyThemeToDOM(state.theme);
         syncEditorBackdropAndGutter();
         syncToolbarAndTitle();
@@ -1183,8 +1272,14 @@ function renderStudioDrawerControls(): void {
   document.getElementById('btn-save-theme-d')?.addEventListener('click', async () => {
     const nameInput = document.getElementById('custom-theme-name') as HTMLInputElement;
     const rawName = (nameInput?.value || 'custom-theme').trim();
-    const jsonStr = JSON.stringify(state.theme, null, 2);
+    const themeToSave: LiteMDThemeConfig = {
+      ...cloneTheme(state.theme),
+      id: `custom:${rawName}`,
+      name: rawName,
+    };
+    const jsonStr = JSON.stringify(themeToSave, null, 2);
     const savedPath = await saveCustomThemeOnD(rawName, jsonStr);
+    await refreshCustomThemesFromD();
     const statusEl = document.getElementById('saved-themes-status');
     if (statusEl) {
       statusEl.textContent = `✓ Saved to ${savedPath}`;
@@ -1225,6 +1320,8 @@ function renderStudioDrawerControls(): void {
           ? 'em'
           : key.endsWith('Ch')
           ? 'ch'
+          : key === 'previewMathScale'
+          ? 'x'
           : '';
         badge.textContent = `${numVal}${suffix}`;
       }
@@ -1395,6 +1492,14 @@ window.addEventListener('keydown', (ev) => {
   }
 });
 
+// Keep soft-wrap line numbers synchronized on window or split-pane resize
+if (typeof ResizeObserver !== 'undefined') {
+  const editorResizeObserver = new ResizeObserver(() => {
+    syncEditorBackdropAndGutter();
+  });
+  editorResizeObserver.observe(elEditorStage);
+}
+
 // Frame-1 Initialization
 syncToolbarAndTitle();
 syncEditorBackdropAndGutter();
@@ -1407,5 +1512,5 @@ requestAnimationFrame(async () => {
   if (cliFile) {
     await loadFileFromPath(cliFile);
   }
-  void listCustomThemesOnD();
+  await refreshCustomThemesFromD();
 });
