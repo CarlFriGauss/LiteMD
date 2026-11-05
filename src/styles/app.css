@@ -1,0 +1,908 @@
+/* ============================================================================
+ * LiteMD — Master Stylesheet (Engine A, Engine B, Soft-Wrap Gutter, Theme Studio)
+ * ============================================================================ */
+
+:root {
+  --preview-font-body: "KaTeX_Main", "Cambria", "Georgia", serif;
+  --preview-font-heading: "KaTeX_Main", "Cambria", "Georgia", serif;
+  --preview-font-code: "Cascadia Mono", "Consolas", "Courier New", monospace;
+  --preview-font-math: "KaTeX_Main", "Times New Roman", serif;
+  --preview-font-size: 17px;
+  --preview-line-height: 1.72;
+  --preview-letter-spacing: 0em;
+  --preview-para-spacing: 1.05em;
+
+  --preview-margin-y: 44px;
+  --preview-margin-x: 52px;
+  --preview-max-width: 840px;
+  --preview-section-spacing: 1.55em;
+
+  --preview-workspace-bg: #e9ecef;
+  --preview-canvas-bg: #ffffff;
+  --preview-body-color: #181a1f;
+  --preview-muted-color: #5c6370;
+
+  --preview-h1-color: #0f172a;
+  --preview-h2-color: #1e3a8a;
+  --preview-h3-color: #1e40af;
+  --preview-h4-color: #334155;
+  --preview-h-border-color: #cbd5e1;
+
+  --preview-math-color: #0f172a;
+  --preview-math-bg: #f8fafc;
+  --preview-math-border: #e2e8f0;
+  --preview-quote-border: #2563eb;
+  --preview-quote-bg: #f1f5f9;
+  --preview-inline-code-bg: #f1f5f9;
+  --preview-inline-code-color: #be123c;
+  --preview-link-color: #1d4ed8;
+  --preview-table-border: #cbd5e1;
+  --preview-table-stripe: #f8fafc;
+
+  --editor-bg: #fcfcfd;
+  --editor-fg: #1e293b;
+  --editor-gutter-bg: #f1f5f9;
+  --editor-gutter-fg: #64748b;
+  --editor-selection-bg: #bfdbfe;
+  --editor-font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
+  --editor-font-size: 14.5px;
+  --editor-line-height: 1.65;
+  --editor-wrap-width: 86ch;
+
+  --syntax-heading: #1d4ed8;
+  --syntax-emphasis: #7c3aed;
+  --syntax-math-fg: #047857;
+  --syntax-math-bg: rgba(16, 185, 129, 0.10);
+  --syntax-code: #be123c;
+
+  --chrome-bg: #181a1f;
+  --chrome-surface: #21252b;
+  --chrome-border: #323842;
+  --chrome-fg: #e2e8f0;
+  --chrome-muted: #94a3b8;
+  --chrome-accent: #38bdf8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* ----------------------------------------------------------------------------
+ * Permanent Classic Visible Vertical Scrollbars (AGENT.md Guardrail #4)
+ * ---------------------------------------------------------------------------- */
+.litemd-classic-scroll {
+  overflow-y: scroll !important;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+
+.litemd-classic-scroll::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.litemd-classic-scroll::-webkit-scrollbar-track {
+  background: var(--editor-gutter-bg);
+  border-left: 1px solid rgba(128, 128, 128, 0.28);
+}
+
+.litemd-classic-scroll::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.62);
+  border: 2px solid var(--editor-gutter-bg);
+  border-radius: 0px;
+  min-height: 36px;
+}
+
+.litemd-classic-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.88);
+}
+
+.litemd-classic-scroll::-webkit-scrollbar-corner {
+  background: var(--editor-gutter-bg);
+}
+
+/* ----------------------------------------------------------------------------
+ * Top Command & Mode Toolbar
+ * ---------------------------------------------------------------------------- */
+.litemd-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  min-height: 38px;
+  padding: 0 10px;
+  background: var(--chrome-bg);
+  color: var(--chrome-fg);
+  border-bottom: 1px solid var(--chrome-border);
+  user-select: none;
+  font-size: 12.5px;
+  gap: 8px;
+  z-index: 40;
+}
+
+.litemd-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.litemd-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #38bdf8;
+  padding-right: 8px;
+  border-right: 1px solid var(--chrome-border);
+  margin-right: 4px;
+}
+
+.litemd-file-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--chrome-surface);
+  border: 1px solid var(--chrome-border);
+  color: var(--chrome-fg);
+  font-family: var(--editor-font-family);
+  font-size: 11.5px;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.litemd-dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  display: none;
+}
+
+.litemd-dirty-dot.is-dirty {
+  display: inline-block;
+}
+
+.litemd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--chrome-surface);
+  color: var(--chrome-fg);
+  border: 1px solid var(--chrome-border);
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.08s ease, border-color 0.08s ease;
+}
+
+.litemd-btn:hover {
+  background: #2c313a;
+  border-color: #4b5563;
+}
+
+.litemd-btn.is-active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #38bdf8;
+  color: #7dd3fc;
+  font-weight: 600;
+}
+
+.litemd-btn-inspector.is-active {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: #f59e0b;
+  color: #fde68a;
+}
+
+.litemd-kbd {
+  font-family: var(--editor-font-family);
+  font-size: 10px;
+  opacity: 0.72;
+  padding: 1px 4px;
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 2px;
+}
+
+/* ----------------------------------------------------------------------------
+ * Main Workspace Container & Split-Pane Engine A
+ * ---------------------------------------------------------------------------- */
+.litemd-workspace {
+  position: relative;
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: calc(100vh - 62px);
+  overflow: hidden;
+  background: var(--preview-workspace-bg);
+}
+
+.litemd-engine-a {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.litemd-pane-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--editor-bg);
+  color: var(--editor-fg);
+  overflow: hidden;
+  min-width: 180px;
+}
+
+.litemd-divider {
+  width: 6px;
+  min-width: 6px;
+  height: 100%;
+  background: var(--chrome-border);
+  cursor: col-resize;
+  position: relative;
+  z-index: 15;
+  transition: background 0.1s ease;
+}
+
+.litemd-divider:hover,
+.litemd-divider.is-dragging {
+  background: #38bdf8;
+}
+
+.litemd-pane-preview {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  background: var(--preview-workspace-bg);
+  padding: 20px;
+  min-width: 180px;
+}
+
+/* View Mode Layout Overrides */
+.litemd-engine-a[data-layout="preview-only"] .litemd-pane-editor,
+.litemd-engine-a[data-layout="preview-only"] .litemd-divider {
+  display: none !important;
+}
+
+.litemd-engine-a[data-layout="editor-only"] .litemd-pane-preview,
+.litemd-engine-a[data-layout="editor-only"] .litemd-divider {
+  display: none !important;
+}
+
+.litemd-engine-a[data-layout="editor-only"] .litemd-pane-editor {
+  width: 100% !important;
+  flex: 1 !important;
+}
+
+/* ----------------------------------------------------------------------------
+ * Raw Editor Surface + Soft-Wrap Gutter + Syntax Highlighting Mirror (Section 6 & 7.B)
+ * ---------------------------------------------------------------------------- */
+.litemd-editor-scroll-viewport {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  height: 100%;
+  background: var(--editor-bg);
+}
+
+.litemd-gutter {
+  flex-shrink: 0;
+  width: 52px;
+  min-height: 100%;
+  padding: 18px 8px 120px 4px;
+  background: var(--editor-gutter-bg);
+  color: var(--editor-gutter-fg);
+  border-right: 1px solid rgba(128, 128, 128, 0.2);
+  font-family: var(--editor-font-family);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
+  text-align: right;
+  user-select: none;
+  pointer-events: none;
+}
+
+.litemd-gutter.is-hidden {
+  display: none;
+}
+
+.litemd-gutter-row {
+  height: calc(var(--editor-font-size) * var(--editor-line-height));
+  white-space: nowrap;
+}
+
+.litemd-gutter-wrap-cue {
+  opacity: 0.55;
+  font-size: 0.85em;
+  color: var(--syntax-heading);
+}
+
+.litemd-editor-stage {
+  position: relative;
+  flex: 1;
+  min-height: 100%;
+  max-width: var(--editor-wrap-width);
+  border-right: 1px dashed rgba(128, 128, 128, 0.22);
+}
+
+/* Both backdrop and textarea share 100% identical box & font metrics */
+.litemd-editor-backdrop,
+.litemd-editor-textarea {
+  margin: 0;
+  padding: 18px 20px 120px 18px;
+  width: 100%;
+  font-family: var(--editor-font-family);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
+  tab-size: 2;
+  letter-spacing: 0px;
+  font-variant-ligatures: none;
+  box-sizing: border-box;
+}
+
+.litemd-editor-stage[data-soft-wrap="true"] .litemd-editor-backdrop,
+.litemd-editor-stage[data-soft-wrap="true"] .litemd-editor-textarea {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.litemd-editor-stage[data-soft-wrap="false"] .litemd-editor-backdrop,
+.litemd-editor-stage[data-soft-wrap="false"] .litemd-editor-textarea {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.litemd-editor-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  min-height: 100%;
+  pointer-events: none;
+  color: var(--editor-fg);
+  z-index: 1;
+  overflow: hidden;
+}
+
+.litemd-editor-textarea {
+  position: relative;
+  display: block;
+  min-height: 100%;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--editor-fg);
+  border: none;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  z-index: 2;
+}
+
+.litemd-editor-textarea::selection {
+  background: var(--editor-selection-bg);
+  color: transparent;
+}
+
+/* Subtle Raw Markdown Token Colors (Section 7.B - never changes character width!) */
+.tok-heading {
+  color: var(--syntax-heading);
+}
+.tok-emphasis {
+  color: var(--syntax-emphasis);
+}
+.tok-math {
+  color: var(--syntax-math-fg);
+  background: var(--syntax-math-bg);
+  border-radius: 2px;
+}
+.tok-code {
+  color: var(--syntax-code);
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 2px;
+}
+.tok-muted {
+  opacity: 0.6;
+}
+
+/* ----------------------------------------------------------------------------
+ * Rendered Preview Document Sheet (Section 7.A)
+ * ---------------------------------------------------------------------------- */
+.litemd-preview-sheet {
+  margin: 0 auto;
+  width: 100%;
+  max-width: var(--preview-max-width);
+  min-height: calc(100% - 8px);
+  padding: var(--preview-margin-y) var(--preview-margin-x);
+  background: var(--preview-canvas-bg);
+  color: var(--preview-body-color);
+  font-family: var(--preview-font-body);
+  font-size: var(--preview-font-size);
+  line-height: var(--preview-line-height);
+  letter-spacing: var(--preview-letter-spacing);
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.12);
+  border-radius: 2px;
+}
+
+.litemd-preview-sheet h1,
+.litemd-preview-sheet h2,
+.litemd-preview-sheet h3,
+.litemd-preview-sheet h4,
+.litemd-preview-sheet h5,
+.litemd-preview-sheet h6 {
+  font-family: var(--preview-font-heading);
+  margin-top: var(--preview-section-spacing);
+  margin-bottom: 0.55em;
+  line-height: 1.28;
+  font-weight: 700;
+}
+
+.litemd-preview-sheet h1 {
+  color: var(--preview-h1-color);
+  font-size: 1.9em;
+  padding-bottom: 0.28em;
+  border-bottom: 2px solid var(--preview-h-border-color);
+  margin-top: 0.2em;
+}
+
+.litemd-preview-sheet h2 {
+  color: var(--preview-h2-color);
+  font-size: 1.48em;
+  padding-bottom: 0.22em;
+  border-bottom: 1px solid var(--preview-h-border-color);
+}
+
+.litemd-preview-sheet h3 {
+  color: var(--preview-h3-color);
+  font-size: 1.22em;
+}
+
+.litemd-preview-sheet h4,
+.litemd-preview-sheet h5,
+.litemd-preview-sheet h6 {
+  color: var(--preview-h4-color);
+  font-size: 1.05em;
+}
+
+.litemd-preview-sheet p,
+.litemd-preview-sheet ul,
+.litemd-preview-sheet ol {
+  margin-top: 0;
+  margin-bottom: var(--preview-para-spacing);
+}
+
+.litemd-preview-sheet a {
+  color: var(--preview-link-color);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.litemd-preview-sheet hr {
+  border: none;
+  border-top: 1px solid var(--preview-h-border-color);
+  margin: var(--preview-section-spacing) 0;
+}
+
+.litemd-preview-sheet blockquote {
+  margin: var(--preview-para-spacing) 0;
+  padding: 10px 16px;
+  border-left: 4px solid var(--preview-quote-border);
+  background: var(--preview-quote-bg);
+  color: var(--preview-muted-color);
+  border-radius: 0 3px 3px 0;
+}
+
+.litemd-preview-sheet blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.litemd-preview-sheet code {
+  font-family: var(--preview-font-code);
+  font-size: 0.88em;
+  padding: 0.15em 0.4em;
+  background: var(--preview-inline-code-bg);
+  color: var(--preview-inline-code-color);
+  border-radius: 3px;
+}
+
+.litemd-preview-sheet pre.litemd-code-block {
+  margin: var(--preview-para-spacing) 0;
+  padding: 14px 16px;
+  background: var(--preview-math-bg);
+  border: 1px solid var(--preview-math-border);
+  border-radius: 4px;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.litemd-preview-sheet pre.litemd-code-block code {
+  padding: 0;
+  background: transparent;
+  color: var(--preview-body-color);
+  font-size: 0.86em;
+}
+
+.hl-comment {
+  color: var(--preview-muted-color);
+  font-style: italic;
+}
+.hl-keyword {
+  color: var(--preview-h2-color);
+  font-weight: 600;
+}
+.hl-string {
+  color: var(--preview-inline-code-color);
+}
+.hl-number {
+  color: #059669;
+}
+
+/* Display & Inline Math Blocks (Section 4 & Section 7.A) */
+.litemd-math-block {
+  margin: var(--preview-para-spacing) 0;
+  padding: 12px 16px;
+  background: var(--preview-math-bg);
+  border: 1px solid var(--preview-math-border);
+  border-radius: 4px;
+  color: var(--preview-math-color);
+  overflow-x: auto;
+}
+
+.litemd-math-block .katex,
+.litemd-math-inline .katex {
+  font-family: var(--preview-font-math);
+  color: var(--preview-math-color);
+}
+
+.litemd-math-block .katex-display {
+  margin: 0.2em 0;
+}
+
+/* Fault-Tolerant Error Recovery: Soft Amber Highlight (spec.md Rule 5) */
+.litemd-math-incomplete {
+  background: rgba(245, 158, 11, 0.16) !important;
+  border: 1px dashed #f59e0b !important;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* GFM Tables */
+.litemd-preview-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--preview-para-spacing) 0;
+  font-size: 0.95em;
+}
+
+.litemd-preview-sheet th,
+.litemd-preview-sheet td {
+  border: 1px solid var(--preview-table-border);
+  padding: 8px 12px;
+}
+
+.litemd-preview-sheet th {
+  background: var(--preview-math-bg);
+  font-weight: 600;
+}
+
+.litemd-preview-sheet tr:nth-child(even) td {
+  background: var(--preview-table-stripe);
+}
+
+/* Task Lists & Footnotes */
+.litemd-task-item {
+  list-style: none;
+  margin-left: -1.3em;
+}
+
+.litemd-task-checkbox {
+  margin-right: 6px;
+  transform: translateY(1px);
+}
+
+.litemd-footnotes {
+  margin-top: 2.2em;
+  font-size: 0.88em;
+  color: var(--preview-muted-color);
+}
+
+/* ----------------------------------------------------------------------------
+ * Engine B: Inline Live-Rendering Editor Mode (Ctrl+E) (spec.md Section 3)
+ * ---------------------------------------------------------------------------- */
+.litemd-engine-b {
+  display: none;
+  width: 100%;
+  height: 100%;
+  background: var(--preview-workspace-bg);
+  padding: 24px;
+}
+
+.litemd-engine-b.is-active {
+  display: block;
+}
+
+.litemd-inline-canvas {
+  margin: 0 auto;
+  max-width: var(--preview-max-width);
+  min-height: calc(100% - 16px);
+  padding: var(--preview-margin-y) var(--preview-margin-x);
+  background: var(--preview-canvas-bg);
+  color: var(--preview-body-color);
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.14);
+  border-radius: 2px;
+}
+
+.litemd-inline-block {
+  position: relative;
+  padding: 4px 8px;
+  margin: 4px -8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: text;
+  transition: border-color 0.08s ease, background 0.08s ease;
+}
+
+.litemd-inline-block:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.03);
+}
+
+.litemd-inline-block.is-editing {
+  border-color: #38bdf8;
+  background: var(--editor-bg);
+  padding: 10px 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.litemd-inline-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--editor-font-family);
+  font-size: 11px;
+  color: #38bdf8;
+  margin-bottom: 6px;
+  user-select: none;
+}
+
+.litemd-inline-textarea {
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--editor-fg);
+  font-family: var(--editor-font-family);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* ----------------------------------------------------------------------------
+ * Direct "Click-to-Style" Preview Inspector Mode (spec.md Section 7.C)
+ * ---------------------------------------------------------------------------- */
+.litemd-preview-sheet.inspector-mode * {
+  cursor: crosshair !important;
+}
+
+.litemd-inspector-hover-target {
+  outline: 2px dashed #f59e0b !important;
+  outline-offset: 3px !important;
+}
+
+.litemd-inspector-popover {
+  position: fixed;
+  z-index: 90;
+  width: 290px;
+  background: #181a1f;
+  color: #f8fafc;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  padding: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  display: none;
+}
+
+.litemd-inspector-popover.is-open {
+  display: block;
+}
+
+.litemd-inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  color: #fde68a;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #323842;
+}
+
+/* ----------------------------------------------------------------------------
+ * Slide-Out Theme, Typography & Layout Studio Drawer (Ctrl+,) (Section 7)
+ * ---------------------------------------------------------------------------- */
+.litemd-studio-drawer {
+  position: fixed;
+  top: 38px;
+  right: 0;
+  bottom: 24px;
+  width: 370px;
+  background: #181a1f;
+  color: #e2e8f0;
+  border-left: 1px solid #323842;
+  box-shadow: -6px 0 24px rgba(0, 0, 0, 0.35);
+  z-index: 60;
+  transform: translateX(100%);
+  transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+
+.litemd-studio-drawer.is-open {
+  transform: translateX(0);
+}
+
+.litemd-studio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #21252b;
+  border-bottom: 1px solid #323842;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.litemd-studio-body {
+  flex: 1;
+  padding: 12px 14px 28px 14px;
+  overflow-y: scroll;
+}
+
+.litemd-studio-section {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2c313a;
+}
+
+.litemd-studio-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #38bdf8;
+  margin-bottom: 8px;
+}
+
+.litemd-preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.litemd-preset-card {
+  padding: 7px 9px;
+  background: #21252b;
+  border: 1px solid #323842;
+  border-radius: 4px;
+  color: #e2e8f0;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.litemd-preset-card:hover,
+.litemd-preset-card.is-active {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.litemd-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 12px;
+}
+
+.litemd-control-row label {
+  color: #cbd5e1;
+  flex: 1;
+}
+
+.litemd-control-row input[type="range"] {
+  width: 115px;
+  accent-color: #38bdf8;
+}
+
+.litemd-control-row input[type="color"] {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #475569;
+  background: transparent;
+  cursor: pointer;
+}
+
+.litemd-control-row select,
+.litemd-control-row input[type="text"] {
+  background: #21252b;
+  color: #f8fafc;
+  border: 1px solid #323842;
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 11.5px;
+  max-width: 175px;
+}
+
+.litemd-val-badge {
+  font-family: var(--editor-font-family);
+  font-size: 11px;
+  color: #94a3b8;
+  min-width: 44px;
+  text-align: right;
+}
+
+/* ----------------------------------------------------------------------------
+ * Status Bar
+ * ---------------------------------------------------------------------------- */
+.litemd-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 12px;
+  background: #121417;
+  color: #94a3b8;
+  border-top: 1px solid #2c313a;
+  font-family: var(--editor-font-family);
+  font-size: 11px;
+  user-select: none;
+  z-index: 40;
+}
+
+.litemd-status-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* ----------------------------------------------------------------------------
+ * Print / Export Clean PDF (Ctrl+P)
+ * ---------------------------------------------------------------------------- */
+@media print {
+  .litemd-toolbar,
+  .litemd-pane-editor,
+  .litemd-divider,
+  .litemd-studio-drawer,
+  .litemd-inspector-popover,
+  .litemd-statusbar {
+    display: none !important;
+  }
+
+  html, body, #app, .litemd-workspace, .litemd-engine-a, .litemd-pane-preview {
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .litemd-preview-sheet {
+    max-width: 100% !important;
+    box-shadow: none !important;
+    padding: 12mm 16mm !important;
+  }
+}
