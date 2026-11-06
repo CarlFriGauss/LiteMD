@@ -46,7 +46,24 @@ import {
 type EngineMode = 'engine-a' | 'engine-b';
 type SplitLayoutMode = 'split' | 'preview-only' | 'editor-only';
 
+interface DocumentTab {
+  id: string;
+  title: string;
+  filePath: string | null;
+  lastSavedMtime: number;
+  isDirty: boolean;
+  markdown: string;
+  selectionStart: number;
+  selectionEnd: number;
+  editorScrollTop: number;
+  previewScrollTop: number;
+  renderedBlocks: LogicalBlock[];
+}
+
 interface AppState {
+  tabs: DocumentTab[];
+  activeTabId: string;
+  nextTabSeq: number;
   markdown: string;
   filePath: string | null;
   lastSavedMtime: number;
@@ -62,7 +79,24 @@ interface AppState {
   renderedBlocks: LogicalBlock[];
 }
 
+const initialTab: DocumentTab = {
+  id: 'tab-1',
+  title: 'Untitled-1.md',
+  filePath: null,
+  lastSavedMtime: 0,
+  isDirty: false,
+  markdown: DEFAULT_DOCUMENT,
+  selectionStart: 0,
+  selectionEnd: 0,
+  editorScrollTop: 0,
+  previewScrollTop: 0,
+  renderedBlocks: [],
+};
+
 const state: AppState = {
+  tabs: [initialTab],
+  activeTabId: initialTab.id,
+  nextTabSeq: 2,
   markdown: DEFAULT_DOCUMENT,
   filePath: null,
   lastSavedMtime: 0,
@@ -90,14 +124,14 @@ appRoot.innerHTML = `
       <div class="litemd-brand" title="LiteMD — Ultra-Lightweight Rust + Tauri v2 Markdown & Math Editor">
         <span>∑ LiteMD</span>
       </div>
-      <button class="litemd-btn" id="btn-new" title="New Document (Ctrl+N)">New</button>
-      <button class="litemd-btn" id="btn-open" title="Open Markdown File (Ctrl+O)">Open…</button>
+      <button class="litemd-btn" id="btn-new" title="New Tab (Ctrl+T / Ctrl+N)">New Tab</button>
+      <button class="litemd-btn" id="btn-open" title="Open Markdown File in Tab (Ctrl+O)">Open…</button>
       <button class="litemd-btn" id="btn-save" title="Save File (Ctrl+S)">Save</button>
       <button class="litemd-btn" id="btn-save-as" title="Save As… (Ctrl+Shift+S)">Save As</button>
       <button class="litemd-btn" id="btn-print" title="Export / Print Clean PDF (Ctrl+P)">PDF</button>
       <div class="litemd-file-pill" id="file-pill" title="Current File Path">
         <span class="litemd-dirty-dot" id="dirty-dot"></span>
-        <span id="file-label">Untitled.md</span>
+        <span id="file-label">Untitled-1.md</span>
       </div>
     </div>
 
@@ -134,6 +168,9 @@ appRoot.innerHTML = `
       </button>
     </div>
   </header>
+
+  <!-- Multi-Document Tab Strip -->
+  <nav class="litemd-tabbar" id="tabbar" aria-label="Open Document Tabs"></nav>
 
   <!-- Main Dual-Engine Workspace -->
   <main class="litemd-workspace">
@@ -244,6 +281,195 @@ const elStudioBody = document.getElementById('studio-body')!;
 const elInspectorPopover = document.getElementById('inspector-popover')!;
 const elInspectorTitle = document.getElementById('inspector-target-title')!;
 const elInspectorControls = document.getElementById('inspector-controls')!;
+const elTabBar = document.getElementById('tabbar')!;
+
+function getActiveTab(): DocumentTab {
+  return state.tabs.find((t) => t.id === state.activeTabId) || state.tabs[0];
+}
+
+function saveActiveTabSnapshot(): void {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.markdown = state.markdown;
+  tab.filePath = state.filePath;
+  tab.lastSavedMtime = state.lastSavedMtime;
+  tab.isDirty = state.isDirty;
+  tab.title = state.filePath
+    ? state.filePath.split(/[\\/]/).pop() || state.filePath
+    : tab.title;
+  tab.selectionStart = elTextarea.selectionStart || 0;
+  tab.selectionEnd = elTextarea.selectionEnd || 0;
+  tab.editorScrollTop = elEditorScroller.scrollTop;
+  tab.previewScrollTop = elPreviewScroller.scrollTop;
+  tab.renderedBlocks = state.renderedBlocks;
+}
+
+function renderTabBar(): void {
+  saveActiveTabSnapshot();
+  const tabsHtml = state.tabs
+    .map((tab, idx) => {
+      const activeClass = tab.id === state.activeTabId ? 'is-active' : '';
+      const dirtyHtml = tab.isDirty
+        ? '<span class="litemd-tab-dirty" title="Unsaved changes"></span>'
+        : '';
+      const tooltip = tab.filePath
+        ? `${tab.filePath} (Ctrl+${idx + 1})`
+        : `${tab.title} — Unsaved buffer (Ctrl+${idx + 1})`;
+      return `
+        <div class="litemd-tab ${activeClass}" data-tab-id="${tab.id}" title="${tooltip}">
+          ${dirtyHtml}
+          <span class="litemd-tab-title">${tab.title}</span>
+          <button class="litemd-tab-close" data-close-tab-id="${tab.id}" title="Close Tab (Ctrl+W)">✕</button>
+        </div>
+      `;
+    })
+    .join('');
+
+  elTabBar.innerHTML = `${tabsHtml}<button class="litemd-tab-add" id="btn-tab-add" title="New Tab (Ctrl+T / Ctrl+N)">+</button>`;
+}
+
+function activateTab(tabId: string): void {
+  if (tabId === state.activeTabId) return;
+  saveActiveTabSnapshot();
+  const target = state.tabs.find((t) => t.id === tabId);
+  if (!target) return;
+
+  state.activeTabId = target.id;
+  state.markdown = target.markdown;
+  state.filePath = target.filePath;
+  state.lastSavedMtime = target.lastSavedMtime;
+  state.isDirty = target.isDirty;
+  state.renderedBlocks = target.renderedBlocks;
+  state.activeInlineBlockIdx = null;
+
+  elTextarea.value = state.markdown;
+  elPreviewSheet.innerHTML = '';
+
+  syncEditorBackdropAndGutter();
+  updateLivePreview();
+  syncToolbarAndTitle();
+
+  requestAnimationFrame(() => {
+    elTextarea.setSelectionRange(target.selectionStart, target.selectionEnd);
+    elEditorScroller.scrollTop = target.editorScrollTop;
+    elPreviewScroller.scrollTop = target.previewScrollTop;
+    updateCursorStatus();
+  });
+}
+
+function createNewTab(
+  initialMarkdown = '# Untitled Note\n\nWrite Markdown and LaTeX math ($x_1 + x_2 = y$) here...\n',
+  filePath: string | null = null,
+  mtime = 0
+): void {
+  saveActiveTabSnapshot();
+  const seq = state.nextTabSeq++;
+  const title = filePath
+    ? filePath.split(/[\\/]/).pop() || filePath
+    : `Untitled-${seq}.md`;
+  const newTab: DocumentTab = {
+    id: `tab-${seq}`,
+    title,
+    filePath,
+    lastSavedMtime: mtime,
+    isDirty: false,
+    markdown: initialMarkdown,
+    selectionStart: 0,
+    selectionEnd: 0,
+    editorScrollTop: 0,
+    previewScrollTop: 0,
+    renderedBlocks: [],
+  };
+  state.tabs.push(newTab);
+  activateTab(newTab.id);
+  elTextarea.focus();
+}
+
+function closeTab(tabId: string): void {
+  saveActiveTabSnapshot();
+  const idx = state.tabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return;
+  const tab = state.tabs[idx];
+
+  if (tab.isDirty && !confirm(`Discard unsaved changes in "${tab.title}"?`)) {
+    return;
+  }
+
+  if (state.tabs.length === 1) {
+    // Reset the sole remaining tab to a fresh untitled buffer
+    const seq = state.nextTabSeq++;
+    tab.id = `tab-${seq}`;
+    tab.title = `Untitled-${seq}.md`;
+    tab.filePath = null;
+    tab.lastSavedMtime = 0;
+    tab.isDirty = false;
+    tab.markdown = '# Untitled Note\n\nWrite Markdown and LaTeX math ($x_1 + x_2 = y$) here...\n';
+    tab.selectionStart = 0;
+    tab.selectionEnd = 0;
+    tab.editorScrollTop = 0;
+    tab.previewScrollTop = 0;
+    tab.renderedBlocks = [];
+
+    state.activeTabId = tab.id;
+    state.markdown = tab.markdown;
+    state.filePath = null;
+    state.lastSavedMtime = 0;
+    state.isDirty = false;
+    elTextarea.value = state.markdown;
+    elPreviewSheet.innerHTML = '';
+    syncEditorBackdropAndGutter();
+    updateLivePreview();
+    syncToolbarAndTitle();
+    return;
+  }
+
+  const wasActive = tab.id === state.activeTabId;
+  state.tabs.splice(idx, 1);
+
+  if (wasActive) {
+    const nextIdx = Math.min(idx, state.tabs.length - 1);
+    const nextTab = state.tabs[nextIdx];
+    state.activeTabId = ''; // Force activateTab to run
+    activateTab(nextTab.id);
+  } else {
+    renderTabBar();
+  }
+}
+
+function cycleTab(delta: number): void {
+  if (state.tabs.length <= 1) return;
+  const idx = state.tabs.findIndex((t) => t.id === state.activeTabId);
+  const nextIdx = (idx + delta + state.tabs.length) % state.tabs.length;
+  activateTab(state.tabs[nextIdx].id);
+}
+
+elTabBar.addEventListener('click', (ev) => {
+  const target = ev.target as HTMLElement;
+  if (target.id === 'btn-tab-add' || target.closest('#btn-tab-add')) {
+    createNewTab();
+    return;
+  }
+  const closeBtn = target.closest<HTMLElement>('[data-close-tab-id]');
+  if (closeBtn) {
+    ev.stopPropagation();
+    closeTab(closeBtn.getAttribute('data-close-tab-id')!);
+    return;
+  }
+  const tabEl = target.closest<HTMLElement>('[data-tab-id]');
+  if (tabEl) {
+    activateTab(tabEl.getAttribute('data-tab-id')!);
+  }
+});
+
+// Middle-click on any tab closes it immediately
+elTabBar.addEventListener('auxclick', (ev) => {
+  if (ev.button !== 1) return;
+  const tabEl = (ev.target as HTMLElement).closest<HTMLElement>('[data-tab-id]');
+  if (tabEl) {
+    ev.preventDefault();
+    closeTab(tabEl.getAttribute('data-tab-id')!);
+  }
+});
 
 /**
  * Syncs the `<textarea>` height and backdrop/gutter so the outer `#editor-scroller`
@@ -296,9 +522,13 @@ function syncEditorBackdropAndGutter(): void {
 
   // Update status bar metrics
   const words = raw.trim().length === 0 ? 0 : raw.trim().split(/\s+/).length;
+  const wrapLabel =
+    state.theme.editorWrapColumnCh > 0
+      ? `${state.theme.editorWrapColumnCh}ch`
+      : 'Full Width';
   elStatusStats.textContent = `${logicalLines} lines · ${words} words · ${raw.length} chars`;
   elStatusWrapInfo.textContent = state.theme.editorSoftWrapEnabled
-    ? `Soft-Wrap: ${wrapCh}ch (+${visualWrappedExtraRows} visual rows, 0 raw \\n added)`
+    ? `Soft-Wrap: ${wrapLabel} (+${visualWrappedExtraRows} visual rows, 0 raw \\n added)`
     : 'Soft-Wrap: OFF';
 }
 
@@ -335,13 +565,20 @@ function updateCursorStatus(): void {
  * Updates toolbar buttons & window title to reflect current state.
  */
 function syncToolbarAndTitle(): void {
+  const activeTab = getActiveTab();
   const filename = state.filePath
     ? state.filePath.split(/[\\/]/).pop() || state.filePath
-    : 'Untitled.md';
+    : activeTab?.title || 'Untitled-1.md';
+  if (activeTab) {
+    activeTab.title = filename;
+    activeTab.filePath = state.filePath;
+    activeTab.isDirty = state.isDirty;
+  }
   elFileLabel.textContent = filename;
   elFileLabel.title = state.filePath || 'Unsaved buffer';
   elDirtyDot.classList.toggle('is-dirty', state.isDirty);
-  void updateNativeWindowTitle(state.filePath, state.isDirty);
+  void updateNativeWindowTitle(state.filePath || filename, state.isDirty);
+  renderTabBar();
 
   const isEngineA = state.engineMode === 'engine-a';
   elEngineA.style.display = isEngineA ? 'flex' : 'none';
@@ -712,34 +949,46 @@ window.addEventListener('mouseup', () => {
  * ============================================================================ */
 async function loadFileFromPath(path: string): Promise<void> {
   try {
+    // If file is already open in a tab, switch directly to that tab
+    const existing = state.tabs.find(
+      (t) => t.filePath && t.filePath.toLowerCase() === path.toLowerCase()
+    );
+    if (existing) {
+      activateTab(existing.id);
+      return;
+    }
+
     const content = await readMarkdownFile(path);
     const mtime = await getFileMtime(path);
-    state.markdown = content;
-    state.filePath = path;
-    state.lastSavedMtime = mtime;
-    state.isDirty = false;
-    elTextarea.value = content;
-    syncEditorBackdropAndGutter();
-    updateLivePreview();
-    syncToolbarAndTitle();
+
+    // Replace active tab if it is an untouched empty/untitled note; otherwise open in a new tab
+    const active = getActiveTab();
+    const isUntouchedBlank =
+      active &&
+      !state.isDirty &&
+      !state.filePath &&
+      state.markdown.startsWith('# Untitled Note');
+
+    if (isUntouchedBlank) {
+      state.markdown = content;
+      state.filePath = path;
+      state.lastSavedMtime = mtime;
+      state.isDirty = false;
+      elTextarea.value = content;
+      elPreviewSheet.innerHTML = '';
+      syncEditorBackdropAndGutter();
+      updateLivePreview();
+      syncToolbarAndTitle();
+    } else {
+      createNewTab(content, path, mtime);
+    }
   } catch (err) {
     alert(`Could not read file "${path}":\n${String(err)}`);
   }
 }
 
 async function handleNewFile(): Promise<void> {
-  if (state.isDirty && !confirm('Discard unsaved changes and start a new document?')) {
-    return;
-  }
-  state.markdown = '# Untitled Note\n\nWrite Markdown and LaTeX math ($x_1 + x_2 = y$) here...\n';
-  state.filePath = null;
-  state.lastSavedMtime = 0;
-  state.isDirty = false;
-  elTextarea.value = state.markdown;
-  syncEditorBackdropAndGutter();
-  updateLivePreview();
-  syncToolbarAndTitle();
-  elTextarea.focus();
+  createNewTab();
 }
 
 async function handleOpenFile(): Promise<void> {
@@ -1141,8 +1390,11 @@ function renderStudioDrawerControls(): void {
       </div>
       <div class="litemd-control-row">
         <label>Max Readable Width</label>
-        <input type="range" min="540" max="1400" step="20" data-theme-num="previewMaxWidthPx" value="${t.previewMaxWidthPx}" />
-        <span class="litemd-val-badge" data-badge="previewMaxWidthPx">${t.previewMaxWidthPx}px</span>
+        <input type="range" min="640" max="2400" step="20" data-theme-num="previewMaxWidthPx" value="${t.previewMaxWidthPx || 2400}" />
+        <span class="litemd-val-badge" data-badge="previewMaxWidthPx">${
+          t.previewMaxWidthPx > 0 ? `${t.previewMaxWidthPx}px` : '100%'
+        }</span>
+        <button class="litemd-btn ${t.previewMaxWidthPx === 0 ? 'is-active' : ''}" id="btn-full-width-page" title="Expand page column to 100% full pane width">100%</button>
       </div>
       <div class="litemd-control-row">
         <label>Section Spacing</label>
@@ -1225,8 +1477,10 @@ function renderStudioDrawerControls(): void {
       <div class="litemd-studio-section-title">5. Raw Editor & Soft-Wrap Studio</div>
       <div class="litemd-control-row">
         <label>Soft-Wrap Column Width</label>
-        <input type="range" min="60" max="130" step="2" data-theme-num="editorWrapColumnCh" value="${t.editorWrapColumnCh}" />
-        <span class="litemd-val-badge" data-badge="editorWrapColumnCh">${t.editorWrapColumnCh}ch</span>
+        <input type="range" min="0" max="180" step="2" data-theme-num="editorWrapColumnCh" value="${t.editorWrapColumnCh}" />
+        <span class="litemd-val-badge" data-badge="editorWrapColumnCh">${
+          t.editorWrapColumnCh > 0 ? `${t.editorWrapColumnCh}ch` : '100%'
+        }</span>
       </div>
       <div class="litemd-control-row">
         <label>Editor Font Size</label>
@@ -1286,6 +1540,13 @@ function renderStudioDrawerControls(): void {
     }
   });
 
+  // Full-width page toggle button in Studio Drawer
+  document.getElementById('btn-full-width-page')?.addEventListener('click', () => {
+    state.theme.previewMaxWidthPx = state.theme.previewMaxWidthPx === 0 ? 1560 : 0;
+    applyThemeToDOM(state.theme);
+    renderStudioDrawerControls();
+  });
+
   // Unify heading colors checkbox
   document.getElementById('chk-unify-headings')?.addEventListener('change', (ev) => {
     state.theme.unifyHeadingColors = (ev.target as HTMLInputElement).checked;
@@ -1314,16 +1575,22 @@ function renderStudioDrawerControls(): void {
       (state.theme as unknown as Record<string, unknown>)[key] = numVal;
       const badge = elStudioBody.querySelector(`[data-badge="${key}"]`);
       if (badge) {
-        const suffix = key.endsWith('Px')
-          ? 'px'
-          : key.endsWith('Em')
-          ? 'em'
-          : key.endsWith('Ch')
-          ? 'ch'
-          : key === 'previewMathScale'
-          ? 'x'
-          : '';
-        badge.textContent = `${numVal}${suffix}`;
+        if (key === 'editorWrapColumnCh' && numVal <= 0) {
+          badge.textContent = '100%';
+        } else if (key === 'previewMaxWidthPx' && numVal <= 0) {
+          badge.textContent = '100%';
+        } else {
+          const suffix = key.endsWith('Px')
+            ? 'px'
+            : key.endsWith('Em')
+            ? 'em'
+            : key.endsWith('Ch')
+            ? 'ch'
+            : key === 'previewMathScale'
+            ? 'x'
+            : '';
+          badge.textContent = `${numVal}${suffix}`;
+        }
       }
       applyThemeToDOM(state.theme);
       if (
@@ -1450,9 +1717,27 @@ window.addEventListener('keydown', (ev) => {
 
   const key = ev.key.toLowerCase();
 
-  if (key === 'n' && !ev.shiftKey) {
+  if ((key === 'n' || key === 't') && !ev.shiftKey) {
     ev.preventDefault();
-    void handleNewFile();
+    createNewTab();
+  } else if (key === 'w' && !ev.shiftKey) {
+    ev.preventDefault();
+    closeTab(state.activeTabId);
+  } else if (ev.key === 'Tab') {
+    ev.preventDefault();
+    cycleTab(ev.shiftKey ? -1 : 1);
+  } else if (ev.key === 'PageDown') {
+    ev.preventDefault();
+    cycleTab(1);
+  } else if (ev.key === 'PageUp') {
+    ev.preventDefault();
+    cycleTab(-1);
+  } else if (key >= '1' && key <= '9' && !ev.shiftKey) {
+    const idx = Number(key) - 1;
+    if (idx < state.tabs.length) {
+      ev.preventDefault();
+      activateTab(state.tabs[idx].id);
+    }
   } else if (key === 'o' && !ev.shiftKey) {
     ev.preventDefault();
     void handleOpenFile();
