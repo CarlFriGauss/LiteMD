@@ -10,3 +10,6 @@
 Thumbs.db
 *.log
 *.swp
+
+# User local scripts
+plotblah.py
