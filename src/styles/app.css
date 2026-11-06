@@ -12,10 +12,10 @@
   --preview-letter-spacing: 0em;
   --preview-para-spacing: 1.05em;
 
-  --preview-margin-y: 44px;
-  --preview-margin-x: 52px;
-  --preview-max-width: 840px;
-  --preview-section-spacing: 1.55em;
+  --preview-margin-y: 28px;
+  --preview-margin-x: 32px;
+  --preview-max-width: 1560px;
+  --preview-section-spacing: 1.5em;
 
   --preview-workspace-bg: #e9ecef;
   --preview-canvas-bg: #ffffff;
@@ -47,7 +47,7 @@
   --editor-font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
   --editor-font-size: 14.5px;
   --editor-line-height: 1.65;
-  --editor-wrap-width: 86ch;
+  --editor-wrap-width: 100%;
 
   --syntax-heading: #1d4ed8;
   --syntax-emphasis: #7c3aed;
@@ -210,6 +210,120 @@
 }
 
 /* ----------------------------------------------------------------------------
+ * Multi-Document Tab Strip (Ultra-Lightweight Native Tabs)
+ * ---------------------------------------------------------------------------- */
+.litemd-tabbar {
+  display: flex;
+  align-items: center;
+  height: 29px;
+  min-height: 29px;
+  padding: 0 6px;
+  background: #121418;
+  border-bottom: 1px solid var(--chrome-border);
+  gap: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  user-select: none;
+  scrollbar-width: none;
+  z-index: 35;
+}
+
+.litemd-tabbar::-webkit-scrollbar {
+  display: none;
+}
+
+.litemd-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px 0 10px;
+  background: var(--chrome-bg);
+  color: var(--chrome-muted);
+  border: 1px solid var(--chrome-border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  font-family: var(--editor-font-family);
+  font-size: 11.5px;
+  cursor: pointer;
+  max-width: 220px;
+  flex-shrink: 0;
+  transition: background 0.08s ease, color 0.08s ease;
+}
+
+.litemd-tab:hover {
+  background: var(--chrome-surface);
+  color: var(--chrome-fg);
+}
+
+.litemd-tab.is-active {
+  background: var(--chrome-surface);
+  color: #7dd3fc;
+  border-color: #38bdf8;
+  border-bottom: 1px solid var(--chrome-surface);
+  font-weight: 600;
+}
+
+.litemd-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.litemd-tab-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex-shrink: 0;
+}
+
+.litemd-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: var(--chrome-muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.litemd-tab-close:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}
+
+.litemd-tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 3px;
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-surface);
+  color: var(--chrome-fg);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.litemd-tab-add:hover {
+  background: #2c313a;
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+/* ----------------------------------------------------------------------------
  * Main Workspace Container & Split-Pane Engine A
  * ---------------------------------------------------------------------------- */
 .litemd-workspace {
@@ -217,7 +331,7 @@
   display: flex;
   flex: 1;
   width: 100%;
-  height: calc(100vh - 62px);
+  height: calc(100vh - 91px);
   overflow: hidden;
   background: var(--preview-workspace-bg);
 }
@@ -261,7 +375,7 @@
   flex: 1;
   height: 100%;
   background: var(--preview-workspace-bg);
-  padding: 20px;
+  padding: 10px 12px;
   min-width: 180px;
 }
 
@@ -641,7 +755,7 @@
   width: 100%;
   height: 100%;
   background: var(--preview-workspace-bg);
-  padding: 24px;
+  padding: 12px 16px;
 }
 
 .litemd-engine-b.is-active {
@@ -650,6 +764,7 @@
 
 .litemd-inline-canvas {
   margin: 0 auto;
+  width: 100%;
   max-width: var(--preview-max-width);
   min-height: calc(100% - 16px);
   padding: var(--preview-margin-y) var(--preview-margin-x);
