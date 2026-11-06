@@ -97,6 +97,24 @@ export async function listCustomThemesOnD(): Promise<CustomThemeRecord[]> {
   }
 }
 
+export async function saveSessionStateOnD(sessionJson: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke<void>('save_session_state', { sessionJson });
+  } catch {
+    // Ignore transient disk errors; localStorage mirror is also active
+  }
+}
+
+export async function loadSessionStateFromD(): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<string | null>('load_session_state');
+  } catch {
+    return null;
+  }
+}
+
 export async function updateNativeWindowTitle(
   filePath: string | null,
   isDirty: boolean

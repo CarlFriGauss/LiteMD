@@ -40,6 +40,8 @@ import {
   pickSaveMarkdownFile,
   saveCustomThemeOnD,
   listCustomThemesOnD,
+  saveSessionStateOnD,
+  loadSessionStateFromD,
   updateNativeWindowTitle,
 } from './lib/tauriBridge';
 
@@ -283,6 +285,153 @@ const elInspectorTitle = document.getElementById('inspector-target-title')!;
 const elInspectorControls = document.getElementById('inspector-controls')!;
 const elTabBar = document.getElementById('tabbar')!;
 
+const SESSION_STORAGE_KEY = 'litemd_session_v1';
+let sessionPersistTimer = 0;
+let isRestoringSession = false;
+
+interface PersistedSessionV1 {
+  version: 1;
+  activeTabId: string;
+  nextTabSeq: number;
+  engineMode: EngineMode;
+  splitLayout: SplitLayoutMode;
+  showLineNumbers: boolean;
+  theme: LiteMDThemeConfig;
+  tabs: Array<{
+    id: string;
+    title: string;
+    filePath: string | null;
+    lastSavedMtime: number;
+    isDirty: boolean;
+    markdown: string;
+    selectionStart: number;
+    selectionEnd: number;
+    editorScrollTop: number;
+    previewScrollTop: number;
+  }>;
+}
+
+function serializeSessionState(): string {
+  const payload: PersistedSessionV1 = {
+    version: 1,
+    activeTabId: state.activeTabId,
+    nextTabSeq: state.nextTabSeq,
+    engineMode: state.engineMode,
+    splitLayout: state.splitLayout,
+    showLineNumbers: state.showLineNumbers,
+    theme: state.theme,
+    tabs: state.tabs.map((t) => ({
+      id: t.id,
+      title: t.title,
+      filePath: t.filePath,
+      lastSavedMtime: t.lastSavedMtime,
+      isDirty: t.isDirty,
+      markdown: t.markdown,
+      selectionStart: t.selectionStart,
+      selectionEnd: t.selectionEnd,
+      editorScrollTop: t.editorScrollTop,
+      previewScrollTop: t.previewScrollTop,
+    })),
+  };
+  return JSON.stringify(payload);
+}
+
+function flushSessionNow(syncOnly = false): void {
+  if (isRestoringSession) return;
+  saveActiveTabSnapshot();
+  const json = serializeSessionState();
+  try {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, json);
+  } catch {
+    // Ignore storage quota errors
+  }
+  if (!syncOnly) {
+    void saveSessionStateOnD(json);
+  }
+}
+
+function scheduleSessionPersist(): void {
+  if (isRestoringSession) return;
+  window.clearTimeout(sessionPersistTimer);
+  sessionPersistTimer = window.setTimeout(() => {
+    flushSessionNow(false);
+  }, 180);
+}
+
+function applyPersistedSessionJson(rawJson: string): boolean {
+  try {
+    const parsed = JSON.parse(rawJson) as Partial<PersistedSessionV1>;
+    if (!parsed || !Array.isArray(parsed.tabs) || parsed.tabs.length === 0) {
+      return false;
+    }
+    isRestoringSession = true;
+    state.tabs = parsed.tabs.map((t, i) => ({
+      id: t.id || `tab-${i + 1}`,
+      title: t.title || `Untitled-${i + 1}.md`,
+      filePath: t.filePath ?? null,
+      lastSavedMtime: Number(t.lastSavedMtime) || 0,
+      isDirty: Boolean(t.isDirty),
+      markdown: typeof t.markdown === 'string' ? t.markdown : '',
+      selectionStart: Number(t.selectionStart) || 0,
+      selectionEnd: Number(t.selectionEnd) || 0,
+      editorScrollTop: Number(t.editorScrollTop) || 0,
+      previewScrollTop: Number(t.previewScrollTop) || 0,
+      renderedBlocks: [],
+    }));
+    state.nextTabSeq = Math.max(
+      Number(parsed.nextTabSeq) || 2,
+      state.tabs.length + 1
+    );
+    const active =
+      state.tabs.find((t) => t.id === parsed.activeTabId) || state.tabs[0];
+    state.activeTabId = active.id;
+    state.markdown = active.markdown;
+    state.filePath = active.filePath;
+    state.lastSavedMtime = active.lastSavedMtime;
+    state.isDirty = active.isDirty;
+    state.renderedBlocks = [];
+
+    if (parsed.engineMode === 'engine-a' || parsed.engineMode === 'engine-b') {
+      state.engineMode = parsed.engineMode;
+    }
+    if (
+      parsed.splitLayout === 'split' ||
+      parsed.splitLayout === 'preview-only' ||
+      parsed.splitLayout === 'editor-only'
+    ) {
+      state.splitLayout = parsed.splitLayout;
+    }
+    if (typeof parsed.showLineNumbers === 'boolean') {
+      state.showLineNumbers = parsed.showLineNumbers;
+    }
+    if (parsed.theme && typeof parsed.theme === 'object') {
+      state.theme = {
+        ...cloneTheme(THEME_PRESETS['latex-academic']),
+        ...parsed.theme,
+      };
+      applyThemeToDOM(state.theme);
+    }
+
+    elTextarea.value = state.markdown;
+    elPreviewSheet.innerHTML = '';
+    syncEditorBackdropAndGutter();
+    updateLivePreview();
+    syncToolbarAndTitle();
+
+    requestAnimationFrame(() => {
+      elTextarea.setSelectionRange(active.selectionStart, active.selectionEnd);
+      elEditorScroller.scrollTop = active.editorScrollTop;
+      elPreviewScroller.scrollTop = active.previewScrollTop;
+      updateCursorStatus();
+    });
+    isRestoringSession = false;
+    return true;
+  } catch {
+    isRestoringSession = false;
+    return false;
+  }
+}
+
 function getActiveTab(): DocumentTab {
   return state.tabs.find((t) => t.id === state.activeTabId) || state.tabs[0];
 }
@@ -306,6 +455,7 @@ function saveActiveTabSnapshot(): void {
 
 function renderTabBar(): void {
   saveActiveTabSnapshot();
+  scheduleSessionPersist();
   const tabsHtml = state.tabs
     .map((tab, idx) => {
       const activeClass = tab.id === state.activeTabId ? 'is-active' : '';
@@ -1785,14 +1935,46 @@ if (typeof ResizeObserver !== 'undefined') {
   editorResizeObserver.observe(elEditorStage);
 }
 
-// Frame-1 Initialization
-syncToolbarAndTitle();
-syncEditorBackdropAndGutter();
-updateLivePreview();
-updateCursorStatus();
+// Guarantee zero-loss session flush on window close, hide, or process exit
+window.addEventListener('beforeunload', () => {
+  flushSessionNow(true);
+});
+window.addEventListener('pagehide', () => {
+  flushSessionNow(true);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    flushSessionNow(false);
+  }
+});
 
-// Check for CLI file argument (`litemd notes.md`) immediately after initial paint
+// Attempt immediate 0ms synchronous restore from localStorage cache on D:\
+let restoredSync = false;
+try {
+  const cachedSession = window.localStorage.getItem(SESSION_STORAGE_KEY);
+  if (cachedSession) {
+    restoredSync = applyPersistedSessionJson(cachedSession);
+  }
+} catch {
+  // Ignore if localStorage is unavailable
+}
+
+// Frame-1 Initialization
+if (!restoredSync) {
+  syncToolbarAndTitle();
+  syncEditorBackdropAndGutter();
+  updateLivePreview();
+  updateCursorStatus();
+}
+
+// Check for D:\ session.json fallback and CLI file argument (`litemd notes.md`) immediately after initial paint
 requestAnimationFrame(async () => {
+  if (!restoredSync) {
+    const diskSession = await loadSessionStateFromD();
+    if (diskSession) {
+      applyPersistedSessionJson(diskSession);
+    }
+  }
   const cliFile = await getCliFileArg();
   if (cliFile) {
     await loadFileFromPath(cliFile);

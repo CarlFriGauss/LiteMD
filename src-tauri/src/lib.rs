@@ -334,6 +334,38 @@ fn list_custom_themes() -> Result<Vec<ThemeEntry>, String> {
     Ok(entries)
 }
 
+/// Atomically persists the active multi-tab session (including unsaved buffers)
+/// strictly on D:\ (`D:\projects\TextEditor\.cache\session.json`).
+#[tauri::command]
+fn save_session_state(session_json: &str) -> Result<(), String> {
+    let cache_dir = Path::new("D:\\projects\\TextEditor\\.cache");
+    if !cache_dir.exists() {
+        fs::create_dir_all(cache_dir)
+            .map_err(|e| format!("Failed to create D:\\ cache directory: {}", e))?;
+    }
+    let tmp_path = cache_dir.join("session.json.tmp");
+    let final_path = cache_dir.join("session.json");
+    fs::write(&tmp_path, session_json.as_bytes())
+        .map_err(|e| format!("Failed to write session temp file on D:\\: {}", e))?;
+    fs::rename(&tmp_path, &final_path)
+        .or_else(|_| fs::write(&final_path, session_json.as_bytes()))
+        .map_err(|e| format!("Failed to commit session file on D:\\: {}", e))?;
+    Ok(())
+}
+
+/// Loads the persisted multi-tab session from `D:\projects\TextEditor\.cache\session.json`.
+#[tauri::command]
+fn load_session_state() -> Result<Option<String>, String> {
+    let final_path = Path::new("D:\\projects\\TextEditor\\.cache\\session.json");
+    if !final_path.exists() {
+        return Ok(None);
+    }
+    match fs::read_to_string(final_path) {
+        Ok(s) if !s.trim().is_empty() => Ok(Some(s)),
+        _ => Ok(None),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
@@ -352,6 +384,8 @@ pub fn run() {
             pick_save_markdown_file,
             save_custom_theme_json,
             list_custom_themes,
+            save_session_state,
+            load_session_state,
         ])
         .run(tauri::generate_context!())
         .expect("fatal error while running LiteMD Tauri application");
