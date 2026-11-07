@@ -33,7 +33,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "useLocalToolsDir": true,
+    "publisher": "LiteMD",
+    "shortDescription": "Lightweight Markdown and mathematics editor",
+    "resources": {
+      "windows/path.ps1": "installer/path.ps1"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./windows/hooks.nsh",
+        "displayLanguageSelector": false,
+        "languages": ["English"]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

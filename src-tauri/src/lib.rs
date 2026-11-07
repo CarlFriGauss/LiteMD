@@ -106,7 +106,9 @@ pub fn get_storage_root() -> PathBuf {
         return d_workspace.to_path_buf();
     }
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(local_app_data).join("LiteMD");
+        // Separate user data from the installer's executable directory.
+        // This also matches Tauri's optional "delete app data" uninstall choice.
+        return PathBuf::from(local_app_data).join("com.litemd.editor");
     }
     if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
         return PathBuf::from(home).join(".litemd");

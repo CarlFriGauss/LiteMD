@@ -55,3 +55,9 @@ For the tag repair, current evidence is in `.cache/tag-regression-before.log`, `
 Build/test transcripts are retained under `.cache/repair-audit-frontend-tests.log`, `.cache/repair-audit-frontend-build.log`, `.cache/repair-audit-rust-tests.log`, and `.cache/repair-final-build.log`. The original uncommitted diff was backed up under `.cache/repair-backup-2026-11-07/` before repairs.
 
 Selection verification: `.cache/selection-native-verification.json`, `.cache/selection-light.png`, `.cache/selection-dark.png`, and `.cache/selection-release-build.log`. The selected foreground is opaque and the highlight has 60% opacity; the fixture was not modified and its native window closed successfully.
+
+## Windows distribution
+
+The per-user NSIS installer adds Start menu/desktop shortcuts and offers terminal PATH integration. No new runtime package or background service was added. Installer tools are cached under the project target directory. User data defaults to `com.litemd.editor` under LOCALAPPDATA, separate from the executable; the existing D: workspace and custom `LITEMD_DATA_DIR` remain supported.
+
+Local verification passed: installer/portable executable SHA-256 equality, shortcuts pointing to the installed executable, PATH registration and cleanup, and preserving a user-data sentinel through uninstall. PATH registry tests cover values longer than 8 KiB, repeated installation, pre-existing entries, later user edits, and an originally missing value. Evidence: `.cache/installer-local-smoke.log`, `.cache/installer-rust-tests.log`, `.cache/installer-release-build.log`, and `.cache/installer-bundle.log`. The updated backend's seven Rust tests pass. The GitHub workflow repeats the suites and installer checks on a clean Windows runner before uploading artifacts or creating a draft release.

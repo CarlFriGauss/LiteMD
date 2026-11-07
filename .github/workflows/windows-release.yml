@@ -1,0 +1,104 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Keep build caches in the workspace
+        shell: pwsh
+        run: |
+          "CARGO_HOME=$env:GITHUB_WORKSPACE\.cache\cargo" >> $env:GITHUB_ENV
+          "CARGO_TARGET_DIR=$env:GITHUB_WORKSPACE\target" >> $env:GITHUB_ENV
+          "NPM_CONFIG_CACHE=$env:GITHUB_WORKSPACE\.cache\npm" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - name: Use current stable Rust on the disposable runner
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt
+      - name: Install locked frontend dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Test rendering and installer PATH integration
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/test-installer-path.ps1
+      - name: Test native file safety
+        working-directory: src-tauri
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked
+      - name: Build optimized executable and installer
+        run: |
+          npm run tauri -- build --no-bundle --ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run tauri -- bundle --bundles nsis --ci --no-binary-patching
+      - name: Verify Windows installation and uninstallation
+        run: |
+          $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          ./scripts/verify-windows-installer.ps1 -Installer $installer.FullName
+      - name: Collect downloadable files and checksums
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw 'Release tag must match the application version.'
+          }
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item target/release/bundle/nsis/*-setup.exe "release/LiteMD_$($version)_x64-setup.exe"
+          Copy-Item target/release/litemd.exe "release/LiteMD_$($version)_x64-portable.exe"
+          $lines = Get-ChildItem release/*.exe | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          }
+          $lines | Set-Content release/SHA256SUMS.txt -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiteMD-windows-x64
+          path: release/*
+          if-no-files-found: error
+
+  draft-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: LiteMD-windows-x64
+          path: release
+      - name: Create a draft release for final review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $files = @(Get-ChildItem release/* | ForEach-Object FullName)
+          $draft = gh release view $env:GITHUB_REF_NAME --json isDraft --jq .isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if ($draft -ne 'true') { throw 'Published releases are immutable; use a new version tag.' }
+            gh release upload $env:GITHUB_REF_NAME @files --clobber
+          } else {
+            gh release create $env:GITHUB_REF_NAME @files --verify-tag --draft --title "LiteMD $env:GITHUB_REF_NAME" --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
