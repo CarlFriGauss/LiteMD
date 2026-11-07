@@ -53,36 +53,83 @@ export function escapeHtml(str: string): string {
 
 /**
  * Ultra-fast, zero-dependency syntax highlighter for fenced code blocks.
- * Highlights comments, strings, numbers, and common keywords without pulling in 500KB of Prism/Highlight.js.
+ * Tokenizes raw unescaped code first and escapes each slice so HTML entities like `&#39;`
+ * never collide with `#` comment rules or corrupt Rust lifetimes (`'a`) and contractions (`don't`).
  */
-function highlightCodeSyntax(rawCode: string, lang: string): string {
-  const escaped = escapeHtml(rawCode);
+export function highlightCodeSyntax(rawCode: string, lang: string): string {
   if (!lang || lang === 'text' || lang === 'plain' || lang === 'plaintext') {
-    return escaped;
+    return escapeHtml(rawCode);
   }
-  return escaped.replace(
-    /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|(&quot;(?:\\.|[^&])*?&quot;|&#39;(?:\\.|[^&])*?&#39;|`(?:\\.|[^`])*?`)|\b(function|return|const|let|var|if|else|for|while|match|fn|pub|struct|enum|impl|use|mod|async|await|import|export|from|class|interface|type|def|lambda|yield|True|False|None|true|false|null|undefined|mut|ref|where|in|as)\b|\b(\d+(?:\.\d+)?)\b/g,
-    (match, comment, strLit, kw, num) => {
-      if (comment) return `<span class="hl-comment">${comment}</span>`;
-      if (strLit) return `<span class="hl-string">${strLit}</span>`;
-      if (kw) return `<span class="hl-keyword">${kw}</span>`;
-      if (num) return `<span class="hl-number">${num}</span>`;
-      return match;
+
+  const tokenRegex =
+    /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n]){0,1}'|`(?:\\.|[^`\\])*`)|(\b(?:function|return|const|let|var|if|else|for|while|match|fn|pub|struct|enum|impl|use|mod|async|await|import|export|from|class|interface|type|def|lambda|yield|True|False|None|true|false|null|undefined|mut|ref|where|in|as)\b)|(\b\d+(?:\.\d+)?\b)/g;
+
+  let out = '';
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(rawCode)) !== null) {
+    if (match.index > lastIndex) {
+      out += escapeHtml(rawCode.slice(lastIndex, match.index));
     }
-  );
+    const [full, comment, strLit, kw, num] = match;
+    const escapedToken = escapeHtml(full);
+    if (comment) {
+      out += `<span class="hl-comment">${escapedToken}</span>`;
+    } else if (strLit) {
+      out += `<span class="hl-string">${escapedToken}</span>`;
+    } else if (kw) {
+      out += `<span class="hl-keyword">${escapedToken}</span>`;
+    } else if (num) {
+      out += `<span class="hl-number">${escapedToken}</span>`;
+    } else {
+      out += escapedToken;
+    }
+    lastIndex = tokenRegex.lastIndex;
+  }
+
+  if (lastIndex < rawCode.length) {
+    out += escapeHtml(rawCode.slice(lastIndex));
+  }
+
+  return out;
 }
 
 // Level-1 Memoization Cache: KaTeX expression -> rendered HTML
 const katexMemoCache = new Map<string, { html: string; hasError: boolean }>();
 const MAX_KATEX_CACHE_ENTRIES = 4096;
 
-// Level-2 Dirty-Block Cache: Block FNV-1a hash -> rendered HTML (relative to line 0, patched on output)
+// Level-2 Dirty-Block Cache: Block FNV-1a hash (relative to line 0) -> rendered HTML
 const blockMemoCache = new Map<string, string>();
 const MAX_BLOCK_CACHE_ENTRIES = 2048;
 
+let blockCacheHits = 0;
+let blockCacheMisses = 0;
+
+export function getBlockCacheStats(): { hits: number; misses: number } {
+  return { hits: blockCacheHits, misses: blockCacheMisses };
+}
+
+export function resetBlockCacheStats(): void {
+  blockCacheHits = 0;
+  blockCacheMisses = 0;
+}
+
 /**
- * Renders a single normalized LaTeX string through KaTeX with memoization and
- * fault-tolerant amber highlighting for incomplete expressions (spec.md Rule 5).
+ * Shifts relative (`lineOffset = 0`) line attributes (`data-line`, `data-source-line`, `data-line-end`)
+ * by `lineOffset` so cached block HTML remains 100% valid when lines are inserted/deleted above it.
+ */
+function shiftHtmlLineOffsets(relativeHtml: string, lineOffset: number): string {
+  if (lineOffset === 0) return relativeHtml;
+  return relativeHtml.replace(
+    /\b(data-(?:source-)?line(?:-end)?)="(\d+)"/g,
+    (_m, attr: string, numStr: string) => `${attr}="${Number(numStr) + lineOffset}"`
+  );
+}
+
+/**
+ * Renders a single normalized LaTeX string through KaTeX with memoization,
+ * `trust: false` security hardening, and fault-tolerant amber highlighting (spec.md Rule 5).
  */
 export function renderKatexCached(token: ExtractedMathToken): string {
   const cacheKey = `${token.displayMode ? 'D' : 'I'}:${token.incomplete ? '1' : '0'}:${token.latex}`;
@@ -96,7 +143,7 @@ export function renderKatexCached(token: ExtractedMathToken): string {
         displayMode: token.displayMode,
         throwOnError: false,
         errorColor: '#d97706',
-        trust: true,
+        trust: false,
         strict: false,
       });
       if (html.includes('katex-error')) {
@@ -117,26 +164,41 @@ export function renderKatexCached(token: ExtractedMathToken): string {
 
   const incompleteClass = cached.hasError ? ' litemd-math-incomplete' : '';
   if (token.displayMode) {
-    return `<div class="litemd-math-block${incompleteClass}" data-math-display="true">${cached.html}</div>`;
+    return `<div class="litemd-math-block${incompleteClass}" dir="ltr" data-math-display="true">${cached.html}</div>`;
   }
-  return `<span class="litemd-math-inline${incompleteClass}" data-math-inline="true">${cached.html}</span>`;
+  return `<span class="litemd-math-inline${incompleteClass}" dir="ltr" data-math-inline="true">${cached.html}</span>`;
 }
 
 /**
  * Create and configure the singleton `markdown-it` parser instance.
+ * Hardened with `html: false` and strict link protocol validation to prevent XSS/RCE.
  */
 function createMarkdownItEngine(): MarkdownIt {
   const md = new MarkdownIt({
-    html: true,
+    html: false,
     linkify: true,
     typographer: false,
     breaks: false,
   });
 
+  // Strictly block `javascript:`, `vbscript:`, `data:`, and `file:` URLs
+  md.validateLink = (url: string): boolean => {
+    const clean = url.trim().toLowerCase();
+    if (
+      clean.startsWith('javascript:') ||
+      clean.startsWith('vbscript:') ||
+      clean.startsWith('data:') ||
+      clean.startsWith('file:')
+    ) {
+      return false;
+    }
+    return true;
+  };
+
   // Enable GFM tables and strikethrough explicitly
   md.enable(['table', 'strikethrough']);
 
-  // Inject `data-line` and `data-source-line` attributes on block-level openings
+  // Inject `dir="auto"`, `data-line`, and `data-source-line` attributes on block-level openings
   const blockRules = [
     'paragraph_open',
     'heading_open',
@@ -151,6 +213,7 @@ function createMarkdownItEngine(): MarkdownIt {
     const original = md.renderer.rules[ruleName];
     md.renderer.rules[ruleName] = (tokens, idx, options, env, self) => {
       const token = tokens[idx];
+      token.attrSet('dir', 'auto');
       if (token.map && token.map.length >= 2) {
         const lineOffset = typeof env?.lineOffset === 'number' ? env.lineOffset : 0;
         const startLine = token.map[0] + lineOffset;
@@ -166,7 +229,7 @@ function createMarkdownItEngine(): MarkdownIt {
     };
   }
 
-  // Ensure fenced code blocks also carry `data-line` and `data-source-line`
+  // Ensure fenced code blocks carry `dir="ltr"`, `data-line`, and `data-source-line`
   md.renderer.rules.fence = (tokens, idx, _options, env) => {
     const token = tokens[idx];
     const lineOffset = typeof env?.lineOffset === 'number' ? env.lineOffset : 0;
@@ -174,7 +237,7 @@ function createMarkdownItEngine(): MarkdownIt {
     const info = token.info ? token.info.trim() : '';
     const langClass = info ? ` class="language-${escapeHtml(info)}"` : '';
     const langLabel = info ? ` data-lang="${escapeHtml(info)}"` : '';
-    return `<pre class="litemd-code-block" data-line="${startLine}" data-source-line="${startLine}"${langLabel}><code${langClass}>${token.content}</code></pre>\n`;
+    return `<pre class="litemd-code-block" dir="ltr" data-line="${startLine}" data-source-line="${startLine}"${langLabel}><code${langClass}>${escapeHtml(token.content)}</code></pre>\n`;
   };
 
   return md;
@@ -398,31 +461,66 @@ export function splitIntoLogicalBlocks(
 
     if (inFence) continue;
 
-    // Track multi-line `$$ ... $$` state (count unescaped `$$` tokens on this line)
-    const dollarMatches = line.match(/(?<!\\)\$\$/g);
+    // Strip inline code spans (`...`) and same-line Markdown escaped brackets (`\[text]`)
+    // before checking math block delimiters so `` `$$` ``, `` `\[` ``, or `\[text]` never flips block state!
+    const lineNoCode = line
+      .replace(/(`+)[^`]*?\1/g, '')
+      .replace(/(?<!\\)\\\[[^\[\]\n]*?(?<!\\)\]/g, '');
+
+    // Track multi-line `$$ ... $$` state (count unescaped `$$` tokens outside inline code)
+    const dollarMatches = lineNoCode.match(/(?<!\\)\$\$/g);
     if (dollarMatches && dollarMatches.length % 2 === 1) {
-      inDollarBlock = !inDollarBlock;
+      if (!inDollarBlock) {
+        // Only enter multi-line dollar mode if a closing `$$` actually exists later in the document
+        let hasClosingDollar = false;
+        for (let k = i + 1; k < lines.length; k++) {
+          const futureNoCode = lines[k].replace(/(`+)[^`]*?\1/g, '');
+          if (/(?<!\\)\$\$/.test(futureNoCode)) {
+            hasClosingDollar = true;
+            break;
+          }
+        }
+        if (hasClosingDollar) inDollarBlock = true;
+      } else {
+        inDollarBlock = false;
+      }
     }
 
-    // Track multi-line `\[ ... \]` state
+    // Track multi-line `\[ ... \]` state (ignoring escaped `\\[` and Markdown `\[text]`)
     if (!inDollarBlock) {
-      if (line.includes('\\[') && !line.includes('\\]')) {
-        inBracketBlock = true;
-      } else if (inBracketBlock && line.includes('\\]')) {
+      const openBrackets = (lineNoCode.match(/(?<!\\)\\\[/g) || []).length;
+      const closeBrackets = (lineNoCode.match(/(?<!\\)\\\]/g) || []).length;
+      if (!inBracketBlock && openBrackets > closeBrackets) {
+        // Only enter multi-line bracket mode if a closing `\]` exists before any next `\[`
+        let hasClosingBracket = false;
+        for (let k = i + 1; k < lines.length; k++) {
+          const futureNoCode = lines[k]
+            .replace(/(`+)[^`]*?\1/g, '')
+            .replace(/(?<!\\)\\\[[^\[\]\n]*?(?<!\\)\]/g, '');
+          if (/(?<!\\)\\\]/.test(futureNoCode)) {
+            hasClosingBracket = true;
+            break;
+          }
+          if (/(?<!\\)\\\[/.test(futureNoCode)) {
+            break;
+          }
+        }
+        if (hasClosingBracket) inBracketBlock = true;
+      } else if (inBracketBlock && closeBrackets > openBrackets) {
         inBracketBlock = false;
       }
     }
 
-    // Track standalone `\begin{env} ... \end{env}` state
+    // Track standalone `\begin{env} ... \end{env}` state outside inline code
     if (!inDollarBlock && !inBracketBlock) {
       if (!activeEnvName) {
-        const beginMatch = line.match(
+        const beginMatch = lineNoCode.match(
           /\\begin\{(equation\*?|align\*?|aligned|gather\*?|gathered|bmatrix|pmatrix|vmatrix|Bmatrix|Vmatrix|matrix|cases|split|multline\*?)\}/
         );
-        if (beginMatch && !line.includes(`\\end{${beginMatch[1]}}`)) {
+        if (beginMatch && !lineNoCode.includes(`\\end{${beginMatch[1]}}`)) {
           activeEnvName = beginMatch[1];
         }
-      } else if (line.includes(`\\end{${activeEnvName}}`)) {
+      } else if (lineNoCode.includes(`\\end{${activeEnvName}}`)) {
         activeEnvName = null;
       }
     }
@@ -441,7 +539,37 @@ export function splitIntoLogicalBlocks(
 }
 
 /**
- * Full 5-stage Markdown + Math renderer with Dirty-Block Memoization.
+ * Renders a logical block using the line-number-independent `blockMemoCache`
+ * and shifts `data-line` / `data-source-line` attributes to `blk.startLine`.
+ */
+function renderBlockCached(
+  blk: { startLine: number; endLine: number; raw: string; hash: string },
+  footnotesMap: Map<string, string>,
+  footnotesSig: string
+): { contentKey: string; html: string } {
+  const contentKey = `${blk.hash}:${footnotesSig}`;
+  let relativeHtml = blockMemoCache.get(contentKey);
+
+  if (relativeHtml === undefined) {
+    blockCacheMisses++;
+    relativeHtml = renderSingleChunk(blk.raw, 0, footnotesMap);
+    if (blockMemoCache.size >= MAX_BLOCK_CACHE_ENTRIES) {
+      const firstKey = blockMemoCache.keys().next().value;
+      if (firstKey !== undefined) blockMemoCache.delete(firstKey);
+    }
+    blockMemoCache.set(contentKey, relativeHtml);
+  } else {
+    blockCacheHits++;
+  }
+
+  return {
+    contentKey,
+    html: shiftHtmlLineOffsets(relativeHtml, blk.startLine),
+  };
+}
+
+/**
+ * Full 5-stage Markdown + Math renderer with Line-Number-Independent Dirty-Block Memoization.
  * Used by both Engine A, Engine B, and automated test suites.
  */
 export function renderMarkdown(markdown: string): string {
@@ -449,31 +577,23 @@ export function renderMarkdown(markdown: string): string {
     return '';
   }
 
-  // If the document contains footnote definitions (`[^id]:`), render in a unified pass
-  // or share the footnote map across blocks.
   const hasFootnotes = /^\[\^[^\]]+\]:/m.test(markdown);
   const footnotesMap = new Map<string, string>();
+  let footnotesSig = '0';
   if (hasFootnotes) {
     extractFootnoteDefinitions(markdown, footnotesMap);
+    footnotesSig = Array.from(footnotesMap.keys()).join(',');
   }
 
   const rawBlocks = splitIntoLogicalBlocks(markdown);
   const htmlParts: string[] = [];
 
   for (let i = 0; i < rawBlocks.length; i++) {
-    const blk = rawBlocks[i];
-    const cacheKey = `${blk.hash}:${blk.startLine}:${hasFootnotes ? footnotesMap.size : 0}`;
-    let blockHtml = blockMemoCache.get(cacheKey);
-
-    if (blockHtml === undefined) {
-      blockHtml = renderSingleChunk(blk.raw, blk.startLine, footnotesMap);
-      if (blockMemoCache.size >= MAX_BLOCK_CACHE_ENTRIES) {
-        const firstKey = blockMemoCache.keys().next().value;
-        if (firstKey !== undefined) blockMemoCache.delete(firstKey);
-      }
-      blockMemoCache.set(cacheKey, blockHtml);
-    }
-
+    const { html: blockHtml } = renderBlockCached(
+      rawBlocks[i],
+      footnotesMap,
+      footnotesSig
+    );
     if (blockHtml.trim().length > 0) {
       htmlParts.push(blockHtml);
     }
@@ -485,7 +605,7 @@ export function renderMarkdown(markdown: string): string {
       const safeId = escapeHtml(id);
       const renderedBody = renderSingleChunk(body, 0, new Map());
       items.push(
-        `<li id="fn-${safeId}" class="litemd-footnote-item">${renderedBody} <a href="#fnref-${safeId}" class="litemd-footnote-backref">↩</a></li>`
+        `<li id="fn-${safeId}" class="litemd-footnote-item" dir="auto">${renderedBody} <a href="#fnref-${safeId}" class="litemd-footnote-backref">↩</a></li>`
       );
     });
     htmlParts.push(
@@ -499,9 +619,9 @@ export function renderMarkdown(markdown: string): string {
 /**
  * Incremental "Dirty-Region" DOM Updater for Engine A Live Preview (`AGENT.md` Law #3).
  *
- * Hashes each logical block in the document and patches ONLY the `<div class="litemd-preview-block">`
- * nodes whose content hash or line offset actually mutated. Unchanged blocks and equations
- * remain completely untouched in the DOM—zero layout thrashing, zero flicker!
+ * Keys the block cache strictly on block content hash (independent of `startLine`),
+ * so inserting or deleting lines at the top of a 1,500-paragraph document never
+ * re-parses Markdown or re-renders KaTeX for unchanged blocks below!
  */
 export function renderIncrementalPreview(
   container: HTMLElement,
@@ -509,8 +629,10 @@ export function renderIncrementalPreview(
 ): LogicalBlock[] {
   const hasFootnotes = /^\[\^[^\]]+\]:/m.test(markdown);
   const footnotesMap = new Map<string, string>();
+  let footnotesSig = '0';
   if (hasFootnotes) {
     extractFootnoteDefinitions(markdown, footnotesMap);
+    footnotesSig = Array.from(footnotesMap.keys()).join(',');
   }
 
   const rawBlocks = splitIntoLogicalBlocks(markdown);
@@ -518,24 +640,18 @@ export function renderIncrementalPreview(
 
   for (let i = 0; i < rawBlocks.length; i++) {
     const blk = rawBlocks[i];
-    const cacheKey = `${blk.hash}:${blk.startLine}:${hasFootnotes ? footnotesMap.size : 0}`;
-    let blockHtml = blockMemoCache.get(cacheKey);
-
-    if (blockHtml === undefined) {
-      blockHtml = renderSingleChunk(blk.raw, blk.startLine, footnotesMap);
-      if (blockMemoCache.size >= MAX_BLOCK_CACHE_ENTRIES) {
-        const firstKey = blockMemoCache.keys().next().value;
-        if (firstKey !== undefined) blockMemoCache.delete(firstKey);
-      }
-      blockMemoCache.set(cacheKey, blockHtml);
-    }
+    const { contentKey, html: blockHtml } = renderBlockCached(
+      blk,
+      footnotesMap,
+      footnotesSig
+    );
 
     resultBlocks[i] = {
       index: i,
       startLine: blk.startLine,
       endLine: blk.endLine,
       raw: blk.raw,
-      hash: cacheKey,
+      hash: contentKey,
       html: blockHtml,
     };
   }
@@ -547,7 +663,7 @@ export function renderIncrementalPreview(
       const safeId = escapeHtml(id);
       const renderedBody = renderSingleChunk(body, 0, new Map());
       items.push(
-        `<li id="fn-${safeId}" class="litemd-footnote-item">${renderedBody} <a href="#fnref-${safeId}" class="litemd-footnote-backref">↩</a></li>`
+        `<li id="fn-${safeId}" class="litemd-footnote-item" dir="auto">${renderedBody} <a href="#fnref-${safeId}" class="litemd-footnote-backref">↩</a></li>`
       );
     });
     const fnHtml = `<section class="litemd-footnotes"><hr /><ol>${items.join('')}</ol></section>`;
@@ -585,6 +701,27 @@ export function renderIncrementalPreview(
       existingEl.setAttribute('data-source-line', String(blk.startLine));
       existingEl.setAttribute('data-line-end', String(blk.endLine));
       existingEl.innerHTML = blk.html;
+    } else if (existingEl.getAttribute('data-line') !== String(blk.startLine)) {
+      // Content hash is 100% identical; only line offset shifted (e.g. Enter pressed above).
+      // Update wrapper line attributes and inner child line attributes without rebuilding DOM/KaTeX!
+      const oldStart = Number(existingEl.getAttribute('data-line') || 0);
+      const delta = blk.startLine - oldStart;
+      existingEl.setAttribute('data-line', String(blk.startLine));
+      existingEl.setAttribute('data-source-line', String(blk.startLine));
+      existingEl.setAttribute('data-line-end', String(blk.endLine));
+      if (delta !== 0) {
+        const innerLineEls = existingEl.querySelectorAll<HTMLElement>('[data-line]');
+        for (let j = 0; j < innerLineEls.length; j++) {
+          const el = innerLineEls[j];
+          const prevLn = Number(el.getAttribute('data-line') || 0);
+          el.setAttribute('data-line', String(prevLn + delta));
+          el.setAttribute('data-source-line', String(prevLn + delta));
+          const prevEnd = el.getAttribute('data-line-end');
+          if (prevEnd !== null) {
+            el.setAttribute('data-line-end', String(Number(prevEnd) + delta));
+          }
+        }
+      }
     }
   }
 

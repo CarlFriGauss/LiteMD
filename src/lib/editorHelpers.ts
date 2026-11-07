@@ -9,6 +9,27 @@
 
 import { escapeHtml } from './renderer';
 
+/** Splices one inline-editor block while preserving every byte outside that block. */
+export function replaceBlockSource(raw: string, startLine: number, endLine: number, replacement: string): string {
+  const lineOffset = (line: number): number => {
+    let offset = 0;
+    for (let i = 0; i < line; i++) {
+      const next = raw.indexOf('\n', offset);
+      if (next < 0) return raw.length;
+      offset = next + 1;
+    }
+    return offset;
+  };
+  const from = lineOffset(startLine);
+  const to = lineOffset(endLine);
+  const separator = to > from && raw[to - 1] === '\n'
+    ? raw[to - 2] === '\r' ? '\r\n' : '\n'
+    : '';
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const inserted = replacement.replace(/\r\n/g, '\n').replace(/\n/g, eol);
+  return raw.slice(0, from) + inserted + separator + raw.slice(to);
+}
+
 /**
  * Highlights raw Markdown & LaTeX tokens for the synchronized `<pre class="litemd-editor-backdrop">` mirror.
  * Crucial invariant: Every character and newline in `raw` is preserved 1-to-1 so `<textarea>`
@@ -94,7 +115,7 @@ export function buildLineMeasurerHtml(raw: string): string {
   const out = new Array<string>(lines.length);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    out[i] = `<div class="litemd-measure-row">${line.length > 0 ? escapeHtml(line) : '\u200b'}</div>`;
+    out[i] = `<div class="litemd-measure-row" dir="auto">${line.length > 0 ? escapeHtml(line) : '\u200b'}</div>`;
   }
   return out.join('');
 }
@@ -176,8 +197,42 @@ const SLASH_SNIPPETS: Record<string, SlashExpansion> = {
 };
 
 /**
+ * Replaces a character range `[start, end)` inside a `<textarea>` while preserving
+ * the browser's native `Ctrl+Z` / `Ctrl+Y` undo history stack.
+ */
+export function replaceTextareaRangeUndoable(
+  textarea: HTMLTextAreaElement,
+  start: number,
+  end: number,
+  replacement: string,
+  newCursorStart?: number,
+  newCursorEnd?: number
+): void {
+  const hadFocus = document.activeElement === textarea;
+  if (!hadFocus) {
+    textarea.focus({ preventScroll: true });
+  }
+  textarea.setSelectionRange(start, end);
+  let insertedViaExec = false;
+  try {
+    if (typeof document.execCommand === 'function') {
+      insertedViaExec = document.execCommand('insertText', false, replacement);
+    }
+  } catch {
+    insertedViaExec = false;
+  }
+  if (!insertedViaExec) {
+    textarea.setRangeText(replacement, start, end, 'end');
+  }
+  const finalStart = newCursorStart ?? start + replacement.length;
+  const finalEnd = newCursorEnd ?? finalStart;
+  textarea.setSelectionRange(finalStart, finalEnd);
+}
+
+/**
  * Checks if the token immediately preceding the cursor in `textarea` is a slash command
- * (`/math`, `/matrix`, `/align`, `/table`, `/code`) and expands it in-place when triggered.
+ * (`/math`, `/matrix`, `/align`, `/table`, `/code`) and expands it in-place when triggered,
+ * preserving native `Ctrl+Z` undo history.
  */
 export function tryExpandSlashCommand(
   textarea: HTMLTextAreaElement
@@ -196,9 +251,14 @@ export function tryExpandSlashCommand(
   if (!snippet) return false;
 
   const cmdStart = pos - cmd.length;
-  textarea.value =
-    val.slice(0, cmdStart) + snippet.replacement + val.slice(pos);
   const nextCursor = cmdStart + snippet.cursorOffset;
-  textarea.setSelectionRange(nextCursor, nextCursor);
+  replaceTextareaRangeUndoable(
+    textarea,
+    cmdStart,
+    pos,
+    snippet.replacement,
+    nextCursor,
+    nextCursor
+  );
   return true;
 }

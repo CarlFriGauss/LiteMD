@@ -1,27 +1,45 @@
-# LiteMD — Strict D:\ Drive Build & Runtime Environment Script (AGENT.md Section 0.1)
-# Ensures 100% of Cargo crates, target artifacts, npm caches, and temp files stay on D:\.
+# LiteMD — Portable Build & Runtime Environment Script (AGENT.md Section 0.1)
+# Keeps Cargo crates, target artifacts, npm caches, and temp files inside the project directory.
 
-$env:CARGO_HOME = "D:\projects\TextEditor\.cache\cargo"
-$env:CARGO_TARGET_DIR = "D:\projects\TextEditor\target"
-$env:NPM_CONFIG_CACHE = "D:\projects\TextEditor\.cache\npm"
-$env:TEMP = "D:\projects\TextEditor\.cache\tmp"
-$env:TMP = "D:\projects\TextEditor\.cache\tmp"
-$env:WEBVIEW2_USER_DATA_FOLDER = "D:\projects\TextEditor\.cache\webview2"
+$rootDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+
+$env:CARGO_HOME = Join-Path $rootDir ".cache\cargo"
+$env:CARGO_TARGET_DIR = Join-Path $rootDir "target"
+if (-not $env:CARGO_BUILD_JOBS) {
+    $env:CARGO_BUILD_JOBS = "1"
+}
+$env:NPM_CONFIG_CACHE = Join-Path $rootDir ".cache\npm"
+$env:TEMP = Join-Path $rootDir ".cache\tmp"
+$env:TMP = Join-Path $rootDir ".cache\tmp"
+$env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $rootDir ".cache\webview2"
+
+$winlibsDir = Join-Path $rootDir ".cache\winlibs"
+if (Test-Path $winlibsDir) {
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "rust-lld.exe"
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = "-L native=$winlibsDir"
+    $env:AR = Join-Path $winlibsDir "lib.exe"
+    $env:RC = Join-Path $winlibsDir "rc.exe"
+}
+
+if (Test-Path "D:\rtools44\x86_64-w64-mingw32.static.posix\bin\gcc.exe") {
+    $env:CC = "D:\rtools44\x86_64-w64-mingw32.static.posix\bin\gcc.exe"
+    $env:CXX = "D:\rtools44\x86_64-w64-mingw32.static.posix\bin\g++.exe"
+}
 
 $toolchainDirs = @(
-    "D:\projects\TextEditor\.cache\winlibs",
+    $winlibsDir,
     "D:\rtools44\x86_64-w64-mingw32.static.posix\bin",
-    "C:\Users\Rachailovich\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\bin",
-    "C:\Users\Rachailovich\.cargo\bin"
+    (Join-Path $env:USERPROFILE ".rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\bin"),
+    (Join-Path $env:USERPROFILE ".cargo\bin")
 )
 foreach ($dir in $toolchainDirs) {
-    if ((Test-Path $dir) -and ($env:PATH -notlike "*$dir*")) {
+    if ($dir -and (Test-Path $dir) -and ($env:PATH -notlike "*$dir*")) {
         $env:PATH = "$dir;$env:PATH"
     }
 }
 
-New-Item -ItemType Directory -Force -Path $env:CARGO_HOME, $env:CARGO_TARGET_DIR, $env:NPM_CONFIG_CACHE, $env:TEMP, "D:\projects\TextEditor\themes" | Out-Null
-Write-Host "[LiteMD] D:\ storage & toolchain environment active:" -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path $env:CARGO_HOME, $env:CARGO_TARGET_DIR, $env:NPM_CONFIG_CACHE, $env:TEMP, (Join-Path $rootDir "themes") | Out-Null
+Write-Host "[LiteMD] Build & storage environment active:" -ForegroundColor Cyan
 Write-Host "  CARGO_HOME       = $env:CARGO_HOME"
 Write-Host "  CARGO_TARGET_DIR = $env:CARGO_TARGET_DIR"
 Write-Host "  NPM_CONFIG_CACHE = $env:NPM_CONFIG_CACHE"

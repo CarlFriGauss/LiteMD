@@ -1,14 +1,39 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeMathAndCode } from '../mathNormalizer';
-import { renderMarkdown, splitIntoLogicalBlocks } from '../renderer';
+import {
+  renderMarkdown,
+  splitIntoLogicalBlocks,
+  getBlockCacheStats,
+  resetBlockCacheStats,
+} from '../renderer';
 import {
   buildSoftWrapGutterHtml,
   estimateVisualWrappedRows,
+  replaceBlockSource,
   highlightRawMarkdownForBackdrop,
 } from '../editorHelpers';
 import { THEME_PRESETS, cloneTheme } from '../themeStudio';
 
-describe('LiteMD Mandatory Math Edge-Case Test Suite (AGENT.md Phase 4 & spec.md Section 4)', () => {
+describe('LiteMD Mandatory Math Edge-Case & Security Test Suite', () => {
+  it('preserves blank lines, trailing newlines, and CRLF outside an edited inline block', () => {
+    expect(replaceBlockSource('first\n\n\nsecond\n\nlast\n', 3, 4, 'changed\nline'))
+      .toBe('first\n\n\nchanged\nline\n\nlast\n');
+    expect(replaceBlockSource('first\r\n\r\nsecond\r\n', 2, 3, 'changed\nline'))
+      .toBe('first\r\n\r\nchanged\r\nline\r\n');
+    expect(replaceBlockSource('last', 0, 1, 'changed')).toBe('changed');
+  });
+  it('escapes HTML inside an unfinished fenced code block', () => {
+    const html = renderMarkdown('```html\n<img src=x onerror="alert(1)">\n<script>alert(1)</script>');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<script');
+    expect(html).toContain('&lt;img');
+  });
+
+  it('preserves source line numbers after an empty fenced block', () => {
+    const html = renderMarkdown('```rust\n```\n\nFollowing paragraph');
+    expect(html).toContain('data-line="3"');
+    expect(html).not.toContain('LITEMDCODEBLOCK');
+  });
   it('Test 1 (Subscripts & Asterisks in Inline Math): does not corrupt _ or * into Markdown italics/emphasis', () => {
     const input = 'Let $x_1, x_2, \\dots, x_n$ and $A^* A = I$.';
     const norm = normalizeMathAndCode(input);
@@ -106,9 +131,16 @@ describe('LiteMD Mandatory Math Edge-Case Test Suite (AGENT.md Phase 4 & spec.md
     expect(html).not.toContain('katex-error');
   });
 
-  it('Test 6 (Code Protection, Standalone Environments & Fault-Tolerant Recovery): protects $ inside code and highlights incomplete math in amber', () => {
+  it('Test 6 (Code Protection, Single-Line Fenced Blocks, Apostrophes & Lifetimes): renders 0-line, 1-line, and multi-line code blocks without placeholder leaks or &#39; comment corruption', () => {
     const doc = [
       'Inline code `$not_math$` and fenced code:',
+      '',
+      '```rust',
+      "fn borrow<'a>(s: &'a str) -> &'a str { s } // don't break on apostrophes",
+      '```',
+      '',
+      '```python',
+      '```',
       '',
       '```bash',
       'export COST=$100',
@@ -125,13 +157,80 @@ describe('LiteMD Mandatory Math Edge-Case Test Suite (AGENT.md Phase 4 & spec.md
 
     const html = renderMarkdown(doc);
     expect(html).toContain('<code>$not_math$</code>');
+    // Must NEVER leak LITEMDCODEBLOCK0END on single-line or empty code blocks
+    expect(html).not.toContain('LITEMDCODEBLOCK');
+    expect(html).not.toContain('LITEMDCODEINLINE');
+    // Rust lifetime 'a and contraction don't must NOT be eaten by the # comment highlighter
+    expect(html).toContain("borrow&lt;&#39;a&gt;");
+    expect(html).not.toContain('&amp;#39;');
+    expect(html).not.toContain('<span class="hl-comment">#39;');
+    expect(html).toContain('<span class="hl-comment">// don&#39;t break on apostrophes</span>');
     expect(html).toContain('echo $COST_1 * $COST_2');
     expect(html).toContain('COST=$<span class="hl-number">100</span>');
     expect(html).toContain('class="katex-display"');
     expect(html).toContain('litemd-math-incomplete');
   });
 
-  it('Test 7 (Intelligent Visual Soft-Wrapping & Studio Presets): computes ↪ gutter cues without mutating raw buffer newlines', () => {
+  it('Test 7 (Block Splitter Resilience): inline code `$$` or `\\[` and escaped \\[not math] do not merge the rest of the document into 1 block', () => {
+    const paragraphs: string[] = [
+      'Paragraph 1 mentions inline `$$` and `\\[` and a Markdown escaped bracket \\[not math] and lone \\[.',
+    ];
+    for (let i = 2; i <= 51; i++) {
+      paragraphs.push(`Paragraph ${i} with $x_${i} = ${i}$.`);
+    }
+    const doc = paragraphs.join('\n\n');
+
+    const blocks = splitIntoLogicalBlocks(doc);
+    expect(blocks).toHaveLength(51);
+
+    const html = renderMarkdown(doc);
+    expect(html).toContain('<code>$$</code>');
+    expect(html).toContain('<code>\\[</code>');
+    expect(html).toContain('[not math]');
+  });
+
+  it('Test 8 (Security Hardening): neutralizes raw HTML <img onerror>, <script>, javascript: links, and KaTeX \\href{javascript:...}', () => {
+    const maliciousMd = [
+      '<img src=x onerror="window.__pwned=1">',
+      '<script>alert("xss")</script>',
+      '[Click me](javascript:alert(1))',
+      '$\\href{javascript:alert(1)}{\\text{malicious math link}}$',
+    ].join('\n\n');
+
+    const html = renderMarkdown(maliciousMd);
+    // Raw HTML tags must be escaped, never emitted as live DOM elements
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<script');
+    expect(html).toContain('&lt;img src=x onerror=');
+    expect(html).toContain('&lt;script&gt;');
+    // javascript: URLs must be rejected by both markdown-it and KaTeX (trust: false)
+    expect(html).not.toContain('href="javascript:');
+  });
+
+  it('Test 9 (Line-Number-Independent Block Cache & BiDi dir Attributes): hits cache for all unchanged blocks when inserting lines at top of document', () => {
+    const blocksList: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      blocksList.push(`Paragraph ${i}: $\\int_0^1 x^{${i}} dx = \\frac{1}{${i + 1}}$`);
+    }
+    const initialDoc = blocksList.join('\n\n');
+    renderMarkdown(initialDoc);
+
+    resetBlockCacheStats();
+    // Insert a new paragraph at the very top (shifting every subsequent block's startLine by +2)
+    const shiftedDoc = `New top paragraph!\n\n${initialDoc}`;
+    const shiftedHtml = renderMarkdown(shiftedDoc);
+    const stats = getBlockCacheStats();
+
+    // All 40 existing blocks must be cache hits and only the 1 new block is a miss
+    expect(stats.hits).toBe(40);
+    expect(stats.misses).toBe(1);
+    // Shifted blocks must have updated data-line attributes and dir="auto" / dir="ltr"
+    expect(shiftedHtml).toContain('data-line="2"');
+    expect(shiftedHtml).toContain('dir="auto"');
+    expect(shiftedHtml).toContain('dir="ltr"');
+  });
+
+  it('Test 10 (Intelligent Visual Soft-Wrapping & Studio Presets): computes ↪ gutter cues without mutating raw buffer newlines', () => {
     const longSingleParagraph =
       'This is a long continuous mathematical paragraph containing $x_1 + x_2 = y$ that exceeds a 40-character column threshold without any hard newline characters.';
     expect(longSingleParagraph.includes('\n')).toBe(false);
@@ -140,7 +239,6 @@ describe('LiteMD Mandatory Math Edge-Case Test Suite (AGENT.md Phase 4 & spec.md
     expect(wrappedRows).toBeGreaterThan(3);
 
     const gutter = buildSoftWrapGutterHtml(longSingleParagraph, true, 40);
-    // Still 1 logical line in the raw buffer, with visual continuation cues (↪) in the gutter
     expect(gutter.logicalLines).toBe(1);
     expect(gutter.visualWrappedExtraRows).toBe(wrappedRows - 1);
     expect(gutter.html).toContain('↪');
@@ -160,7 +258,6 @@ describe('LiteMD Mandatory Math Edge-Case Test Suite (AGENT.md Phase 4 & spec.md
     const cloned = cloneTheme(THEME_PRESETS['latex-academic']);
     expect(cloned.name).toBe('LaTeX Academic Paper');
 
-    // Verify footnotes containing inline code (`.woff2`) and inline math (`$x_1$`) restore cleanly
     const fnDoc = [
       'Standalone math environments render automatically[^1].',
       '',
