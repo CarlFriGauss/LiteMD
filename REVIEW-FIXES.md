@@ -9,6 +9,8 @@ The committed working version and the subsequent safety improvements are retaine
 - **Original compiler error:** yesterday's terminal output was unavailable. The current source successfully built before these repairs, so that original fatal compiler error has not been reproduced. The observed long-section-name linker messages are warnings; they did not prevent successful builds.
 - **Boxed/aligned equation lost its tag:** the delimiter regex rejected the outer display block when it encountered valid row-spacing syntax such as `\\[4pt]`. It then rendered only the inner environment. A linear escape-aware scanner now preserves the entire expression. Sixteen regression cases cover the reported equation, spacing variants, blank lines, escaped delimiters, incomplete openers, and inline environments. The rebuilt native app visibly renders the box and `(11.4.3)` correctly.
 
+- **Fresh-profile recovery race:** startup UI initialization scheduled autosave before the asynchronous disk-session read finished. A fresh WebView profile could replace existing drafts with the welcome buffer. Persistence and early closing now wait for recovery, and fresh-profile editing stays inactive until recovery completes. Three regression tests cover pending recovery, an early close, and normal saves. Native verification recovered all three real draft tabs and the reported equation from a fresh profile; the original session backup was retained.
+
 ## Checklist against the supplied review
 
 “Automated” below identifies behavior covered by tests; “native check pending” identifies behavior that still requires Windows UI verification. Code inspection alone is not a passed UI test.
@@ -22,11 +24,11 @@ The committed working version and the subsequent safety improvements are retaine
 | Single-line and empty code blocks | Protection corrected and covered by rendering/source-line tests. |
 | Apostrophes and Rust lifetimes | Tokenize before HTML escaping; automated rendering test. |
 | Inline-code math delimiters collapsing blocks | Splitter ignores protected delimiters; automated 51-block test. |
-| Closing unsaved tabs/window | Close guard retained, destroy permission corrected, session writes awaited and ordered. Clean native closing verified; reopening the normal session preserved all three tabs and draft text. Explicit confirmation/cancel checks remain pending. |
+| Closing unsaved tabs/window | Close guard retained, destroy permission corrected, session writes awaited and ordered. Native confirmation/cancel paths pass, and the final unsaved edit reaches the disk snapshot before closing. Fresh-profile recovery preserves all three real draft tabs. |
 | Preview link navigation | Click handling prevents app navigation and opens allowed URLs externally. Windows uses the native shell API; native link-opening check pending. |
-| External edit conflicts | All file-backed tabs checked; saving compares disk timestamps; asynchronous reload cannot replace intervening edits. Native conflict check pending. |
+| External edit conflicts | All file-backed tabs checked; saving compares disk timestamps; asynchronous reload cannot replace intervening edits. Native active-document conflict cancellation preserves both the external file and the unsaved buffer. Inactive-tab native checking remains pending. |
 | Engine B blank lines/trailing newline | Block-only string splice preserves outside content, including CRLF. Automated source-splice tests. |
-| Undo after Tab/slash/checkbox/reload | Undo-preserving insertion used; reload no longer assigns the active textarea value directly. Native Ctrl+Z checks pending. |
+| Undo after Tab/slash/checkbox/reload | Undo-preserving insertion used; reload no longer assigns the active textarea value directly. Native Engine A Ctrl+Z checks pass for all four operations; Engine B native verification remains pending. |
 | Atomic saving | Unique sibling temp file, flush, then rename. Failed replacement preserves the original. Rust replacement and failure tests. Session saves use the same helper. |
 | Cache invalidation after line insertion | Relative line offsets and content-only cache keys retained. Automated cache-hit/source-line test. |
 | Whole-editor work per keystroke | Reuses highlight spans, cached word counts, wrap measurements, gutter nodes, and title/tab updates. Automated test proves one changed highlight span for a one-paragraph edit in 1,500 paragraphs. Pixel alignment and latency still need native measurement. |
@@ -44,7 +46,7 @@ No runtime dependencies were added. Release optimization settings (`lto = "fat"`
 
 ## Verification boundary
 
-Completed checks: 32 frontend tests on the updated renderer, 7 Rust tests on the unchanged backend, TypeScript/Vite production build, Rust release build, Rust formatting, and Git whitespace checks. All passed. The linker emitted long-section-name warnings, with no build failure.
+Completed checks: 35 frontend tests on the updated renderer/session initialization, 7 Rust tests on the backend, TypeScript/Vite production build, Rust release build, Rust formatting, and Git whitespace checks. All passed. The linker emitted long-section-name warnings, with no build failure.
 
 The final executable is `target/release/litemd.exe`: **5,233,664 bytes (4.991 MiB)**. This is a measured file size, not a startup or memory benchmark. Dependency manifests and lockfiles are unchanged.
 

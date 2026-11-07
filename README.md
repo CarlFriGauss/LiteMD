@@ -58,6 +58,7 @@ For development, install the standard Tauri Windows prerequisites (Rust, Node.js
 
 # 2. Run automated TypeScript & Rust test suites
 npm test
+npm run build # Rust's test harness embeds these frontend assets too
 Push-Location src-tauri
 cargo test --locked -j 1
 Pop-Location

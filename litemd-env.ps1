@@ -11,7 +11,8 @@ if (-not $env:CARGO_BUILD_JOBS) {
 $env:NPM_CONFIG_CACHE = Join-Path $rootDir ".cache\npm"
 $env:TEMP = Join-Path $rootDir ".cache\tmp"
 $env:TMP = Join-Path $rootDir ".cache\tmp"
-$env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $rootDir ".cache\webview2"
+# The application chooses its profile from LITEMD_DATA_DIR (or the D: workspace).
+# Do not force a second profile when launching a development build after installing.
 
 $winlibsDir = Join-Path $rootDir ".cache\winlibs"
 if (Test-Path $winlibsDir) {

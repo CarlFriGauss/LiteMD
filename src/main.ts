@@ -25,6 +25,7 @@ import {
   tryExpandSlashCommand,
 } from './lib/editorHelpers';
 import { EditorMirror } from './lib/editorMirror';
+import { SessionStartup } from './lib/sessionStartup';
 import {
   LiteMDThemeConfig,
   THEME_PRESETS,
@@ -292,6 +293,7 @@ const elTabBar = document.getElementById('tabbar')!;
 const SESSION_STORAGE_KEY = 'litemd_session_v1';
 let sessionPersistTimer = 0;
 let isRestoringSession = false;
+const sessionStartup = new SessionStartup();
 
 interface PersistedSessionV1 {
   version: 1;
@@ -343,6 +345,9 @@ function serializeSessionState(): string {
 let sessionSaveQueue: Promise<void> = Promise.resolve();
 
 function flushSessionNow(syncOnly = false): Promise<void> {
+  if (!sessionStartup.isReady) {
+    return sessionStartup.afterRestore(() => flushSessionNow(syncOnly));
+  }
   if (isRestoringSession) return Promise.resolve();
   saveActiveTabSnapshot();
   const json = serializeSessionState();
@@ -358,7 +363,7 @@ function flushSessionNow(syncOnly = false): Promise<void> {
 }
 
 function scheduleSessionPersist(): void {
-  if (isRestoringSession) return;
+  if (!sessionStartup.isReady || isRestoringSession) return;
   window.clearTimeout(sessionPersistTimer);
   sessionPersistTimer = window.setTimeout(() => {
     flushSessionNow(false);
@@ -2105,11 +2110,19 @@ if (!restoredSync) {
 }
 
 // Check for D:\ session.json fallback and CLI file argument (`litemd notes.md`) immediately after initial paint
+// A fresh profile must not edit or autosave its welcome buffer over an existing disk session.
+document.body.inert = !restoredSync;
 requestAnimationFrame(() => requestAnimationFrame(async () => {
   // Also restores backend file capabilities when the buffers came from localStorage.
-  const diskSession = await loadSessionStateFromD();
-  if (!restoredSync && diskSession) {
-    applyPersistedSessionJson(diskSession);
+  try {
+    const diskSession = await loadSessionStateFromD();
+    if (!restoredSync && diskSession) {
+      applyPersistedSessionJson(diskSession);
+    }
+  } finally {
+    document.body.inert = false;
+    sessionStartup.finish();
+    scheduleSessionPersist();
   }
   const cliFile = await getCliFileArg();
   if (cliFile) {
