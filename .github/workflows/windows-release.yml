@@ -43,6 +43,9 @@ jobs:
           npm test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/test-installer-path.ps1
+      - name: Build frontend assets required by native tests
+        # generate_context! embeds frontendDist in the test harness too.
+        run: npm run build
       - name: Test native file safety
         working-directory: src-tauri
         run: |
