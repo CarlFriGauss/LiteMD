@@ -37,10 +37,6 @@ export interface NormalizationResult {
 const RAW_ENV_REGEX =
   /\\begin\{(equation\*?|align\*?|aligned|gather\*?|gathered|bmatrix|pmatrix|vmatrix|Bmatrix|Vmatrix|matrix|cases|split|multline\*?)\}([\s\S]*?)\\end\{\1\}/g;
 
-const DISPLAY_BRACKET_REGEX = /\\\[([\s\S]*?)\\\]/g;
-
-const INLINE_PAREN_REGEX = /\\\(([\s\S]*?)\\\)/g;
-
 /**
  * Counts newline characters in a string without allocating an array.
  */
@@ -62,30 +58,50 @@ export function protectCodeBlocks(
   input: string,
   codeTokens: ExtractedCodeToken[]
 ): string {
-  // 1A. Protect fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~
+  // 1A. Protect fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~ (including 0-line and 1-line blocks)
   let out = input.replace(
-    /(^|\n)([ \t]*)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)(\n[ \t]*\3[ \t]*(?=\n|$))/g,
-    (_full, prefix: string, indent: string, fence: string, info: string, body: string, closing: string) => {
+    /(^|\n)([ \t]*)(`{3,}|~{3,})([^\n]*)\n(?:([\s\S]*?)\n)?([ \t]*\3[ \t]*(?=\n|$))/g,
+    (
+      _full,
+      prefix: string,
+      indent: string,
+      fence: string,
+      info: string,
+      body: string | undefined,
+      closing: string
+    ) => {
+      const actualBody = body ?? '';
+      const safeFence = '~'.repeat(Math.max(3, fence.length));
+      const safeClosing = closing.replace(/`{3,}|~{3,}/, safeFence);
+      if (body === undefined) {
+        // An empty fence has no content line to replace; keep its exact line count.
+        return `${prefix}${indent}${safeFence}${info}\n${safeClosing}`;
+      }
       const id = codeTokens.length;
       const placeholder = `LITEMDCODEBLOCK${id}END`;
       codeTokens.push({
         id,
         placeholder,
-        code: body,
+        code: actualBody,
         lang: info.trim(),
         isBlock: true,
       });
       // Preserve exact newline count inside the fenced block so markdown-it's
       // line mapping (token.map -> data-line) remains 100% exact for all following blocks.
-      const nlCount = countNewlines(body);
+      // Emit `~~~` fences in the intermediate buffer so Step 1B backtick scanning never
+      // collides with 1-line or 0-line fenced code blocks.
+      const nlCount = countNewlines(actualBody);
       const newlinePad = nlCount > 0 ? '\n'.repeat(nlCount) : '';
-      return `${prefix}${indent}${fence}${info}\n${placeholder}${newlinePad}${closing}`;
+      return `${prefix}${indent}${safeFence}${info}\n${placeholder}${newlinePad}\n${safeClosing}`;
     }
   );
 
-  // 1B. Protect inline code spans: `...` or ``...`` (not crossing blank lines)
+  // 1B. Protect inline code spans: `...` or ``...`` (not crossing blank lines or fenced blocks)
   out = out.replace(/(`+)([^`\n]|(?!\1)`|\n(?!\n))+?\1/g, (fullMatch, ticks: string) => {
     const inner = fullMatch.slice(ticks.length, fullMatch.length - ticks.length);
+    if (inner.includes('LITEMDCODEBLOCK')) {
+      return fullMatch;
+    }
     const id = codeTokens.length;
     const placeholder = `LITEMDCODEINLINE${id}END`;
     codeTokens.push({
@@ -227,6 +243,41 @@ function extractDoubleDollarDisplayMath(
 }
 
 /**
+ * Consumes backslash escapes in pairs, so a LaTeX row break followed by [4pt]
+ * cannot become a new display opener. An unfinished opener yields to a later
+ * opener instead of absorbing the next complete equation. One linear scan.
+ */
+function extractBackslashDelimitedMath(
+  input: string,
+  mathTokens: ExtractedMathToken[],
+  opening: number,
+  closing: number,
+  displayMode: boolean
+): string {
+  let result = '';
+  let cursor = 0;
+  let openIdx = -1;
+  for (let i = 0; i < input.length - 1; i++) {
+    if (input.charCodeAt(i) !== 92 /* backslash */) continue;
+    const escaped = input.charCodeAt(i + 1);
+    if (escaped === opening) {
+      openIdx = i;
+    } else if (escaped === closing && openIdx >= 0) {
+      const rawSource = input.slice(openIdx, i + 2);
+      const { latex, incomplete } = normalizeLatexPayload(input.slice(openIdx + 2, i));
+      const id = mathTokens.length;
+      const placeholder = `LITEMDMATH${displayMode ? 'BLOCK' : 'INLINE'}${id}END`;
+      mathTokens.push({ id, placeholder, latex, rawSource, displayMode, incomplete });
+      result += input.slice(cursor, openIdx) + placeholder;
+      cursor = i + 2;
+      openIdx = -1;
+    }
+    i++; // The character following a backslash cannot start another escape.
+  }
+  return cursor === 0 ? input : result + input.slice(cursor);
+}
+
+/**
  * Extracts single-dollar `$ ... $` inline math expressions.
  * - Allows optional leading/trailing spaces inside the dollars (`$ \alpha + \beta = \gamma $`).
  * - Supports `|` inside absolute values (`$|x - y| \le \epsilon$` and `$|x| + |y|$`) even inside GFM tables.
@@ -361,22 +412,12 @@ export function normalizeMathAndCode(markdown: string): NormalizationResult {
   text = extractDoubleDollarDisplayMath(text, mathTokens);
 
   // Step 2B: Display math `\[ ... \]` (single-line and multi-line, including blank lines)
-  text = text.replace(DISPLAY_BRACKET_REGEX, (rawSource, inner: string) => {
-    const { latex, incomplete } = normalizeLatexPayload(inner);
-    const id = mathTokens.length;
-    const placeholder = `LITEMDMATHBLOCK${id}END`;
-    mathTokens.push({
-      id,
-      placeholder,
-      latex,
-      rawSource,
-      displayMode: true,
-      incomplete,
-    });
-    return placeholder;
-  });
+  text = extractBackslashDelimitedMath(text, mathTokens, 91 /* [ */, 93 /* ] */, true);
 
-  // Step 2C: Standalone LaTeX environments `\begin{env} ... \end{env}` not already wrapped in `$$` or `\[...\]`
+  // Step 2C: Inline math `\( ... \)` must also protect any environments inside it.
+  text = extractBackslashDelimitedMath(text, mathTokens, 40 /* ( */, 41 /* ) */, false);
+
+  // Step 2D: Standalone environments not already wrapped in a math delimiter.
   text = text.replace(RAW_ENV_REGEX, (rawSource) => {
     const { latex, incomplete } = normalizeLatexPayload(rawSource);
     const id = mathTokens.length;
@@ -387,22 +428,6 @@ export function normalizeMathAndCode(markdown: string): NormalizationResult {
       latex,
       rawSource,
       displayMode: true,
-      incomplete,
-    });
-    return placeholder;
-  });
-
-  // Step 2D: Inline math `\( ... \)`
-  text = text.replace(INLINE_PAREN_REGEX, (rawSource, inner: string) => {
-    const { latex, incomplete } = normalizeLatexPayload(inner);
-    const id = mathTokens.length;
-    const placeholder = `LITEMDMATHINLINE${id}END`;
-    mathTokens.push({
-      id,
-      placeholder,
-      latex,
-      rawSource,
-      displayMode: false,
       incomplete,
     });
     return placeholder;

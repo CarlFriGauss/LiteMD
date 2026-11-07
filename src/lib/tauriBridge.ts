@@ -85,7 +85,7 @@ export async function saveCustomThemeOnD(
       jsonContent,
     });
   }
-  return `D:\\projects\\TextEditor\\themes\\${name}.json`;
+  return `themes/${name}.json`;
 }
 
 export async function listCustomThemesOnD(): Promise<CustomThemeRecord[]> {
@@ -112,6 +112,43 @@ export async function loadSessionStateFromD(): Promise<string | null> {
     return await invoke<string | null>('load_session_state');
   } catch {
     return null;
+  }
+}
+
+export async function openExternalUrl(url: string): Promise<void> {
+  if (isTauriRuntime()) {
+    try {
+      await invoke<void>('open_external_url', { url });
+      return;
+    } catch (error) {
+      window.alert(`Could not open the link: ${String(error)}`);
+      return;
+    }
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+export function registerWindowCloseGuard(
+  hasUnsavedTabs: () => boolean,
+  onFlushSession: () => void | Promise<void>
+): void {
+  if (!isTauriRuntime()) return;
+  try {
+    void getCurrentWindow().onCloseRequested(async (event) => {
+      await onFlushSession();
+      if (
+        hasUnsavedTabs() &&
+        !window.confirm(
+          'You have unsaved changes in open tabs. Close LiteMD without saving to disk? (Your draft is also backed up in the session cache.)'
+        )
+      ) {
+        event.preventDefault();
+      }
+    }).catch(() => {
+      // Registration errors are asynchronous.
+    });
+  } catch {
+    // Ignore if close listener permission is not configured
   }
 }
 

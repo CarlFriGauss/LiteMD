@@ -19,11 +19,12 @@ import {
   LogicalBlock,
 } from './lib/renderer';
 import {
-  highlightRawMarkdownForBackdrop,
   buildLineMeasurerHtml,
-  buildSoftWrapGutterHtml,
+  replaceTextareaRangeUndoable,
+  replaceBlockSource,
   tryExpandSlashCommand,
 } from './lib/editorHelpers';
+import { EditorMirror } from './lib/editorMirror';
 import {
   LiteMDThemeConfig,
   THEME_PRESETS,
@@ -42,6 +43,8 @@ import {
   listCustomThemesOnD,
   saveSessionStateOnD,
   loadSessionStateFromD,
+  openExternalUrl,
+  registerWindowCloseGuard,
   updateNativeWindowTitle,
 } from './lib/tauriBridge';
 
@@ -184,10 +187,11 @@ appRoot.innerHTML = `
           <div class="litemd-gutter" id="editor-gutter" aria-hidden="true"></div>
           <div class="litemd-editor-stage" id="editor-stage" data-soft-wrap="true">
             <div class="litemd-editor-measurer" id="editor-measurer" aria-hidden="true"></div>
-            <pre class="litemd-editor-backdrop" id="editor-backdrop" aria-hidden="true"></pre>
+            <pre class="litemd-editor-backdrop" id="editor-backdrop" dir="auto" aria-hidden="true"></pre>
             <textarea
               class="litemd-editor-textarea"
               id="editor-textarea"
+              dir="auto"
               spellcheck="false"
               autocomplete="off"
               autocorrect="off"
@@ -204,13 +208,13 @@ appRoot.innerHTML = `
 
       <!-- Right Pane: Live Rendered Document -->
       <div class="litemd-pane-preview litemd-classic-scroll" id="preview-scroller">
-        <article class="litemd-preview-sheet" id="preview-sheet"></article>
+        <article class="litemd-preview-sheet" id="preview-sheet" dir="auto"></article>
       </div>
     </section>
 
     <!-- ENGINE B: Inline Live-Rendering Editor Mode (Block/Line WYSIWYG) -->
     <section class="litemd-engine-b litemd-classic-scroll" id="engine-b">
-      <div class="litemd-inline-canvas litemd-preview-sheet" id="inline-canvas"></div>
+      <div class="litemd-inline-canvas litemd-preview-sheet" id="inline-canvas" dir="auto"></div>
     </section>
 
     <!-- Direct "Click-to-Style" Preview Inspector Mini-Palette -->
@@ -241,7 +245,7 @@ appRoot.innerHTML = `
     </div>
     <div class="litemd-status-group">
       <span id="status-stats">0 lines · 0 words · 0 chars</span>
-      <span id="status-perf">Render: 0.2ms (Dirty-Block Cache)</span>
+      <span id="status-perf">Render: ready</span>
     </div>
   </footer>
 `;
@@ -336,8 +340,10 @@ function serializeSessionState(): string {
   return JSON.stringify(payload);
 }
 
-function flushSessionNow(syncOnly = false): void {
-  if (isRestoringSession) return;
+let sessionSaveQueue: Promise<void> = Promise.resolve();
+
+function flushSessionNow(syncOnly = false): Promise<void> {
+  if (isRestoringSession) return Promise.resolve();
   saveActiveTabSnapshot();
   const json = serializeSessionState();
   try {
@@ -346,8 +352,9 @@ function flushSessionNow(syncOnly = false): void {
     // Ignore storage quota errors
   }
   if (!syncOnly) {
-    void saveSessionStateOnD(json);
+    sessionSaveQueue = sessionSaveQueue.then(() => saveSessionStateOnD(json));
   }
+  return sessionSaveQueue;
 }
 
 function scheduleSessionPersist(): void {
@@ -453,9 +460,21 @@ function saveActiveTabSnapshot(): void {
   tab.renderedBlocks = state.renderedBlocks;
 }
 
-function renderTabBar(): void {
+let lastTabBarSig = '';
+let lastWindowTitleSig = '';
+
+function renderTabBar(force = false): void {
   saveActiveTabSnapshot();
   scheduleSessionPersist();
+
+  const sig = `${state.activeTabId}|${state.tabs
+    .map((t) => `${t.id}:${t.title}:${t.isDirty ? 1 : 0}:${t.filePath || ''}`)
+    .join(';')}`;
+  if (!force && sig === lastTabBarSig) {
+    return;
+  }
+  lastTabBarSig = sig;
+
   const tabsHtml = state.tabs
     .map((tab, idx) => {
       const activeClass = tab.id === state.activeTabId ? 'is-active' : '';
@@ -621,45 +640,70 @@ elTabBar.addEventListener('auxclick', (ev) => {
   }
 });
 
+// Per-line soft-wrap row measurement cache so typing only measures mutated lines
+let lineWrapCacheContextKey = '';
+const lineWrapRowCache = new Map<string, number>();
+const editorMirror = new EditorMirror(elEditorBackdrop, elEditorGutter);
+
 /**
  * Syncs the `<textarea>` height and backdrop/gutter so the outer `#editor-scroller`
  * handles all scrolling with a single classic scrollbar, and measures exact per-line
- * wrapped row heights from `#editor-measurer` so gutter line numbers never drift.
+ * wrapped row heights from `#editor-measurer` with per-line memoization so keystrokes
+ * only measure newly edited lines.
  */
 function syncEditorBackdropAndGutter(): void {
   const raw = state.markdown;
-  elEditorBackdrop.innerHTML = highlightRawMarkdownForBackdrop(raw);
+  const { lines, words } = editorMirror.update(raw);
 
   const wrapCh = state.theme.editorWrapColumnCh > 0 ? state.theme.editorWrapColumnCh : 92;
   let measuredRowsPerLine: number[] | undefined;
 
   if (state.theme.editorSoftWrapEnabled) {
-    elEditorMeasurer.innerHTML = buildLineMeasurerHtml(raw);
+    const stageWidth = elEditorStage.clientWidth;
     const singleRowPx = state.theme.editorFontSizePx * state.theme.editorLineHeight;
-    const children = elEditorMeasurer.children;
-    if (singleRowPx > 0 && children.length > 0) {
-      const firstH = (children[0] as HTMLElement).offsetHeight;
-      if (firstH > 0) {
-        measuredRowsPerLine = new Array<number>(children.length);
-        for (let i = 0; i < children.length; i++) {
-          const h = (children[i] as HTMLElement).offsetHeight;
-          measuredRowsPerLine[i] = Math.max(1, Math.round(h / singleRowPx));
+    const contextKey = `${stageWidth}:${state.theme.editorFontFamily}:${state.theme.editorFontSizePx}:${state.theme.editorLineHeight}:${state.theme.editorWrapColumnCh}`;
+
+    if (contextKey !== lineWrapCacheContextKey) {
+      lineWrapCacheContextKey = contextKey;
+      lineWrapRowCache.clear();
+    }
+
+    if (stageWidth > 0 && singleRowPx > 0) {
+      measuredRowsPerLine = new Array<number>(lines.length);
+      const missingIndices: number[] = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const cachedRows = lineWrapRowCache.get(lines[i]);
+        if (cachedRows !== undefined) {
+          measuredRowsPerLine[i] = cachedRows;
+        } else {
+          missingIndices.push(i);
+        }
+      }
+
+      if (missingIndices.length > 0) {
+        const missingRaw = missingIndices.map((idx) => lines[idx]).join('\n');
+        elEditorMeasurer.innerHTML = buildLineMeasurerHtml(missingRaw);
+        const children = elEditorMeasurer.children;
+        for (let k = 0; k < missingIndices.length; k++) {
+          const lineIdx = missingIndices[k];
+          const childEl = children[k] as HTMLElement | undefined;
+          const h = childEl ? childEl.offsetHeight : singleRowPx;
+          const rows = h > 0 ? Math.max(1, Math.round(h / singleRowPx)) : 1;
+          measuredRowsPerLine[lineIdx] = rows;
+          if (lineWrapRowCache.size > 4096) {
+            lineWrapRowCache.clear();
+          }
+          lineWrapRowCache.set(lines[lineIdx], rows);
         }
       }
     }
   }
 
-  const { html: gutterHtml, logicalLines, visualWrappedExtraRows } =
-    buildSoftWrapGutterHtml(
-      raw,
-      state.theme.editorSoftWrapEnabled,
-      wrapCh,
-      measuredRowsPerLine
-    );
-
-  if (state.showLineNumbers) {
-    elEditorGutter.innerHTML = gutterHtml;
-  }
+  const logicalLines = lines.length;
+  const visualWrappedExtraRows = editorMirror.updateGutter(
+    state.theme.editorSoftWrapEnabled, wrapCh, measuredRowsPerLine
+  );
 
   // Auto-size textarea to match its scrollHeight so #editor-scroller scrolls smoothly
   elTextarea.style.height = 'auto';
@@ -671,7 +715,6 @@ function syncEditorBackdropAndGutter(): void {
   elTextarea.style.height = `${targetHeight}px`;
 
   // Update status bar metrics
-  const words = raw.trim().length === 0 ? 0 : raw.trim().split(/\s+/).length;
   const wrapLabel =
     state.theme.editorWrapColumnCh > 0
       ? `${state.theme.editorWrapColumnCh}ch`
@@ -701,13 +744,7 @@ function updateLivePreview(): void {
  */
 function updateCursorStatus(): void {
   const pos = elTextarea.selectionStart || 0;
-  const before = state.markdown.slice(0, pos);
-  const lastNl = before.lastIndexOf('\n');
-  let line = 1;
-  for (let i = 0; i < pos; i++) {
-    if (state.markdown.charCodeAt(i) === 10) line++;
-  }
-  const col = pos - lastNl;
+  const { line, col } = editorMirror.cursor(pos);
   elStatusCursor.textContent = `Ln ${line}, Col ${col}`;
 }
 
@@ -727,7 +764,11 @@ function syncToolbarAndTitle(): void {
   elFileLabel.textContent = filename;
   elFileLabel.title = state.filePath || 'Unsaved buffer';
   elDirtyDot.classList.toggle('is-dirty', state.isDirty);
-  void updateNativeWindowTitle(state.filePath || filename, state.isDirty);
+  const titleSig = `${state.filePath || filename}|${state.isDirty ? 1 : 0}`;
+  if (titleSig !== lastWindowTitleSig) {
+    lastWindowTitleSig = titleSig;
+    void updateNativeWindowTitle(state.filePath || filename, state.isDirty);
+  }
   renderTabBar();
 
   const isEngineA = state.engineMode === 'engine-a';
@@ -912,6 +953,7 @@ function renderEngineBInlineCanvas(): void {
 
       const ta = document.createElement('textarea');
       ta.className = 'litemd-inline-textarea';
+      ta.dir = 'auto';
       ta.spellcheck = false;
       ta.setAttribute('autocomplete', 'off');
       ta.setAttribute('autocorrect', 'off');
@@ -924,8 +966,11 @@ function renderEngineBInlineCanvas(): void {
       };
 
       const commitBlockChange = (newRaw: string) => {
-        const updatedBlocks = blocks.map((b, i) => (i === idx ? newRaw : b.raw));
-        state.markdown = updatedBlocks.join('\n\n');
+        // Surgically splice only `[blk.startLine .. blk.endLine)` in the original document lines
+        // so double blank lines between other blocks and trailing newlines are 100% preserved!
+        const newBlockLines = newRaw.replace(/\r\n/g, '\n').split('\n');
+        state.markdown = replaceBlockSource(state.markdown, blk.startLine, blk.endLine, newRaw);
+        blk.endLine = blk.startLine + newBlockLines.length;
         elTextarea.value = state.markdown;
         state.isDirty = true;
         syncToolbarAndTitle();
@@ -1020,7 +1065,9 @@ function renderEngineBInlineCanvas(): void {
  * ============================================================================ */
 elTextarea.value = state.markdown;
 
+let applyingDiskReload = false;
 elTextarea.addEventListener('input', () => {
+  if (applyingDiskReload) return;
   state.markdown = elTextarea.value;
   state.isDirty = true;
   syncEditorBackdropAndGutter();
@@ -1044,19 +1091,18 @@ elTextarea.addEventListener('keydown', (ev) => {
     return;
   }
 
-  // Indent with 2 spaces on Tab
+  // Indent with 2 spaces on Tab (using undo-safe insertion so Ctrl+Z works)
   if (ev.key === 'Tab' && !ev.ctrlKey && !ev.altKey) {
     ev.preventDefault();
     const start = elTextarea.selectionStart;
     const end = elTextarea.selectionEnd;
-    elTextarea.value =
-      elTextarea.value.slice(0, start) + '  ' + elTextarea.value.slice(end);
-    elTextarea.setSelectionRange(start + 2, start + 2);
+    replaceTextareaRangeUndoable(elTextarea, start, end, '  ', start + 2, start + 2);
     state.markdown = elTextarea.value;
     state.isDirty = true;
     syncEditorBackdropAndGutter();
     updateLivePreview();
     updateCursorStatus();
+    syncToolbarAndTitle();
   }
 });
 
@@ -1149,7 +1195,7 @@ async function handleOpenFile(): Promise<void> {
   }
   // Fallback prompt if running inside browser dev mode
   if (!('__TAURI_INTERNALS__' in window)) {
-    const manualPath = prompt('Enter full path to .md file on D:\\:', 'D:\\projects\\TextEditor\\spec.md');
+    const manualPath = prompt('Enter the full path to a Markdown file:', 'notes.md');
     if (manualPath) await loadFileFromPath(manualPath);
   }
 }
@@ -1157,11 +1203,18 @@ async function handleOpenFile(): Promise<void> {
 async function handleSaveFile(forceSaveAs = false): Promise<void> {
   let targetPath = state.filePath;
   if (!targetPath || forceSaveAs) {
-    const picked = await pickSaveMarkdownFile(
-      state.filePath || 'D:\\projects\\TextEditor\\notes.md'
-    );
+    const picked = await pickSaveMarkdownFile(state.filePath || 'notes.md');
     if (!picked) return;
     targetPath = picked;
+  } else if (state.lastSavedMtime > 0) {
+    // Check if the file on disk was modified externally since we loaded/saved it
+    const diskMtime = await getFileMtime(targetPath);
+    if (diskMtime !== state.lastSavedMtime) {
+      const overwrite = window.confirm(
+        `The file "${targetPath}" has been modified on disk by another program since you loaded it.\n\nOverwrite external changes on disk? (Click Cancel to keep disk file and use Save As instead.)`
+      );
+      if (!overwrite) return;
+    }
   }
 
   try {
@@ -1175,20 +1228,52 @@ async function handleSaveFile(forceSaveAs = false): Promise<void> {
   }
 }
 
-// Lightweight external file modification watcher (polls metadata mtime when clean)
+// Lightweight external file modification watcher across all open file-backed tabs
+let externalCheckPending = false;
 window.setInterval(async () => {
-  if (!state.filePath || state.isDirty) return;
-  const mtime = await getFileMtime(state.filePath);
-  if (mtime > 0 && state.lastSavedMtime > 0 && mtime > state.lastSavedMtime) {
-    const content = await readMarkdownFile(state.filePath);
-    state.lastSavedMtime = mtime;
-    if (content !== state.markdown) {
-      state.markdown = content;
-      elTextarea.value = content;
-      syncEditorBackdropAndGutter();
-      updateLivePreview();
-      elStatusPerf.textContent = 'Auto-reloaded external edit from disk';
+  if (externalCheckPending) return;
+  externalCheckPending = true;
+  try {
+  saveActiveTabSnapshot();
+  for (const tab of state.tabs) {
+    if (!tab.filePath || tab.lastSavedMtime <= 0) continue;
+    const path = tab.filePath;
+    const previousContent = tab.markdown;
+    const mtime = await getFileMtime(path);
+    if (mtime > 0 && mtime !== tab.lastSavedMtime) {
+      if (!tab.isDirty) {
+        const content = await readMarkdownFile(path);
+        // Reading is asynchronous: never replace edits typed while the disk read was pending.
+        if (!state.tabs.includes(tab) || tab.filePath !== path || tab.isDirty || tab.markdown !== previousContent) continue;
+        tab.lastSavedMtime = mtime;
+        if (tab.id === state.activeTabId) state.lastSavedMtime = mtime;
+        if (content !== tab.markdown) {
+          tab.markdown = content;
+          if (tab.id === state.activeTabId) {
+            state.markdown = content;
+            state.lastSavedMtime = mtime;
+            applyingDiskReload = true;
+            try {
+              replaceTextareaRangeUndoable(elTextarea, 0, elTextarea.value.length, content,
+                Math.min(elTextarea.selectionStart, content.length),
+                Math.min(elTextarea.selectionEnd, content.length));
+            } finally {
+              applyingDiskReload = false;
+            }
+            syncEditorBackdropAndGutter();
+            updateLivePreview();
+          }
+          elStatusPerf.textContent = `Auto-reloaded external edit (${tab.title})`;
+        }
+      } else if (tab.id === state.activeTabId) {
+        elStatusPerf.textContent = `⚠️ External disk change detected on ${tab.title}`;
+      }
     }
+  }
+  } catch {
+    // A deleted/locked document must not stop checks for future external changes.
+  } finally {
+    externalCheckPending = false;
   }
 }, 1500);
 
@@ -1218,7 +1303,7 @@ elPreviewSheet.addEventListener('mouseout', () => {
   }
 });
 
-// Interactive GFM task-list checkbox toggling in the Preview Pane
+// Interactive GFM task-list checkbox toggling in the Preview Pane (undo-safe!)
 elPreviewSheet.addEventListener('change', (ev) => {
   const target = ev.target as HTMLInputElement;
   if (!target || !target.classList.contains('litemd-task-checkbox')) return;
@@ -1227,20 +1312,68 @@ elPreviewSheet.addEventListener('change', (ev) => {
   const lineIdx = Number(li.getAttribute('data-line'));
   const lines = state.markdown.split('\n');
   if (lineIdx >= 0 && lineIdx < lines.length) {
-    lines[lineIdx] = lines[lineIdx].replace(
+    let charStart = 0;
+    for (let i = 0; i < lineIdx; i++) {
+      charStart += lines[i].length + 1;
+    }
+    const oldLine = lines[lineIdx];
+    const newLine = oldLine.replace(
       /^(\s*[-*+]\s+\[)[ xX](\])/,
       `$1${target.checked ? 'x' : ' '}$2`
     );
-    state.markdown = lines.join('\n');
-    elTextarea.value = state.markdown;
-    state.isDirty = true;
-    syncEditorBackdropAndGutter();
-    updateLivePreview();
-    syncToolbarAndTitle();
+    if (newLine !== oldLine) {
+      replaceTextareaRangeUndoable(
+        elTextarea,
+        charStart,
+        charStart + oldLine.length,
+        newLine,
+        elTextarea.selectionStart,
+        elTextarea.selectionEnd
+      );
+      state.markdown = elTextarea.value;
+      state.isDirty = true;
+      syncEditorBackdropAndGutter();
+      updateLivePreview();
+      syncToolbarAndTitle();
+    }
   }
 });
 
+// Intercept link clicks in Preview & Inline Canvas so clicking a link never navigates the app window
+function handlePreviewLinkClick(ev: MouseEvent): boolean {
+  const anchor = (ev.target as HTMLElement).closest<HTMLAnchorElement>('a[href]');
+  if (!anchor) return false;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const href = (anchor.getAttribute('href') || '').trim();
+  if (!href) return true;
+
+  if (href.startsWith('#')) {
+    const targetId = href.slice(1);
+    const dest = document.getElementById(targetId);
+    if (dest) {
+      dest.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    return true;
+  }
+
+  const lower = href.toLowerCase();
+  if (
+    lower.startsWith('https://') ||
+    lower.startsWith('http://') ||
+    lower.startsWith('mailto:')
+  ) {
+    void openExternalUrl(href);
+  }
+  return true;
+}
+
+elInlineCanvas.addEventListener('click', (ev) => {
+  handlePreviewLinkClick(ev);
+});
+
 elPreviewSheet.addEventListener('click', (ev) => {
+  if (handlePreviewLinkClick(ev)) return;
   if (!state.inspectorActive) return;
   ev.preventDefault();
   ev.stopPropagation();
@@ -1466,7 +1599,7 @@ function renderStudioDrawerControls(): void {
         <input type="text" id="custom-theme-name" placeholder="my-academic-theme" value="${t.name
           .toLowerCase()
           .replace(/\s+/g, '-')}" style="flex:1;max-width:none;" />
-        <button class="litemd-btn" id="btn-save-theme-d" title="Save custom theme JSON to D:\\projects\\TextEditor\\themes\\">Save JSON on D:\\</button>
+        <button class="litemd-btn" id="btn-save-theme-d" title="Save custom theme JSON">Save Theme JSON</button>
       </div>
       <div id="saved-themes-status" style="font-size:11px;color:#38bdf8;margin-top:4px;"></div>
     </div>
@@ -1935,7 +2068,11 @@ if (typeof ResizeObserver !== 'undefined') {
   editorResizeObserver.observe(elEditorStage);
 }
 
-// Guarantee zero-loss session flush on window close, hide, or process exit
+// Guarantee zero-loss session flush & unsaved-changes close guard on window close
+registerWindowCloseGuard(
+  () => state.tabs.some((t) => t.isDirty),
+  () => flushSessionNow(false)
+);
 window.addEventListener('beforeunload', () => {
   flushSessionNow(true);
 });
@@ -1968,16 +2105,15 @@ if (!restoredSync) {
 }
 
 // Check for D:\ session.json fallback and CLI file argument (`litemd notes.md`) immediately after initial paint
-requestAnimationFrame(async () => {
-  if (!restoredSync) {
-    const diskSession = await loadSessionStateFromD();
-    if (diskSession) {
-      applyPersistedSessionJson(diskSession);
-    }
+requestAnimationFrame(() => requestAnimationFrame(async () => {
+  // Also restores backend file capabilities when the buffers came from localStorage.
+  const diskSession = await loadSessionStateFromD();
+  if (!restoredSync && diskSession) {
+    applyPersistedSessionJson(diskSession);
   }
   const cliFile = await getCliFileArg();
   if (cliFile) {
     await loadFileFromPath(cliFile);
   }
   await refreshCustomThemesFromD();
-});
+}));

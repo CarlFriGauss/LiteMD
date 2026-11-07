@@ -520,8 +520,8 @@
 }
 
 .litemd-editor-textarea::selection {
-  background: var(--editor-selection-bg);
-  color: transparent;
+  background: color-mix(in srgb, var(--editor-selection-bg) 60%, transparent);
+  color: var(--editor-fg);
 }
 
 /* Subtle Raw Markdown Token Colors (Section 7.B - never changes character width!) */
