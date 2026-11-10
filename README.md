@@ -20,7 +20,7 @@
 - **Multi-Tab Bar & Automatic Session Snapshot:** Work across multiple documents simultaneously (`Ctrl+N`, `Ctrl+W`, `Ctrl+Tab`). Unsaved buffers and open tabs are automatically snapshotted to disk and restored on launch, with window-close protection, atomic `.tmp`-then-rename saves, external modification conflict detection, and UTF-8 / UTF-16 / Windows-1255 (Hebrew) encoding support.
 
 ### 3. Hardened Security Model (`src-tauri/src/lib.rs` & `src-tauri/tauri.conf.json`)
-- **Preview Security:** Raw HTML passthrough is disabled (`html: false`), code fences are escaped, KaTeX untrusted macros/links are disabled (`trust: false`), `javascript:` / `vbscript:` / `data:` URLs are blocked, and a Content Security Policy (CSP) is enforced with `withGlobalTauri: false`.
+- **Preview Security:** Arbitrary HTML passthrough is disabled. Optional presentation HTML is parsed inertly and rebuilt from explicit element, attribute, and CSS allowlists. Code fences remain escaped, KaTeX untrusted macros/links remain disabled (`trust: false`), unsafe URL schemes are blocked, and CSP remains enforced with `withGlobalTauri: false`.
 - **Capability-Scoped File I/O:** The Rust backend only allows reading or writing paths explicitly authorized by the user via native OS file dialogs or CLI launch arguments, and blocks executable/script extensions and OS `Startup` folders.
 
 ### 4. Intelligent Visual Soft-Wrapping & Theme Studio (`src/lib/editorHelpers.ts` & `src/lib/themeStudio.ts`)
@@ -28,6 +28,27 @@
 - **Slide-Out Studio Drawer (`Ctrl+,`):** Live `:root` CSS Custom Property controls for fonts, sizes, line height, paragraph spacing, max line width, math scale (`--math-scale`), and 4 built-in presets (*LaTeX Academic Paper*, *Warm Sepia Textbook*, *Dark OLED Math*, *High-Contrast Blueprint*).
 
 ---
+
+## Local images and presentation markup
+
+Saved documents can load SVG, PNG, JPEG/JPG, GIF, and WebP images from their own folder or its subfolders, including filenames with spaces or Unicode:
+
+~~~markdown
+![Plot](./figures/plot with spaces.svg)
+
+<figure>
+  <img src="./plot.svg" alt="Mathematical plot">
+  <figcaption><small>Figure 1. A quadratic correction.</small></figcaption>
+</figure>
+~~~
+
+Unsaved documents show a placeholder until saved. Absolute paths, parent traversal (`..`), directory-junction escapes, non-image files, and unauthorized document paths are rejected. Only referenced image files receive revocable native image capabilities; the WebView never receives general folder access. Images use native decoding, without Base64 IPC or SVG DOM injection. HTTPS images continue to work. Limits are 32 MiB per local file, 512 distinct references per document, and 2,048 authorized images across open documents. Changed image files refresh on tab reactivation or reopening; there is no added background watcher.
+
+Supported HTML includes `small`, `strong`, `em`, `span`, paragraphs, headings, `div`, `section`, figures, images, lists, blockquotes, and basic tables. Use Markdown for links and fenced code. Scripts, interactive forms, frames, inline SVG/MathML, event handlers, arbitrary attributes, and executable URLs are excluded.
+
+Optional `<style>` blocks and `style` attributes support colors, font settings, spacing, borders, size constraints, alignment, and simple flex layouts. Stylesheet selectors support allowed tag/class names, descendants, child selectors, and comma groups. Rules are scoped to author-written HTML in the active document; they cannot target the toolbar, editor, dialogs, or KaTeX internals. CSS imports, resource URLs, variables, pseudo/attribute/id selectors, at-rules, animations, fixed positioning, and arbitrary browser CSS are intentionally unsupported. Use small presentation fragments, not complete web pages. HTML blocks are limited to 65,536 UTF-16 code units/512 nodes/32 levels; stylesheets to 32,768 code units/128 rules.
+
+The normal Markdown path retains block caching. Native HTML/CSS parser objects and image maps are created only when needed, and caption edits reuse unchanged image nodes. See [the compatibility engineering report](COMPATIBILITY-REPORT.md) for measured results and verification details.
 
 ## Install and launch on Windows
 
@@ -74,9 +95,11 @@ cargo build --release --locked -j 1
 
 Run Cargo from `src-tauri` consistently: local Cargo configuration is resolved from the current directory, so switching directories can change compiler flags and force dependency rebuilds. The environment script defaults to one compiler job; this affects building only.
 
-The CSP explicitly allows style attributes (`style-src-attr 'unsafe-inline'`) because KaTeX uses them for equation layout. Tauri adds a nonce to `style-src`, which otherwise blocks these attributes even when that directive includes `'unsafe-inline'`. Script restrictions, raw HTML escaping, and untrusted KaTeX commands remain enforced. The main window also grants `core:window:allow-destroy`, which Tauri's unsaved-changes close handler needs to finish an approved close.
+The CSP explicitly allows style attributes (`style-src-attr 'unsafe-inline'`) because KaTeX uses them for equation layout. Tauri adds a nonce to `style-src`, which otherwise blocks these attributes even when that directive includes `'unsafe-inline'`. Script restrictions, presentation allowlists, and untrusted KaTeX commands remain enforced. The main window also grants `core:window:allow-destroy`, which Tauri's unsaved-changes close handler needs to finish an approved close.
 
 To package the executable with the installer, return to the repository root and run **npm run tauri -- bundle --bundles nsis --ci --no-binary-patching**. This packages the exact same executable offered as the portable download. NSIS tools are cached inside **target/.tauri**, not the user's system cache. The installer appears under **target/release/bundle/nsis**.
+
+The official icon source is **src-tauri/icons/LiteMD-Icon1.png**, preserved with its original colors, proportions, and transparency. The Windows ICO and the three configured PNG sizes are generated with the existing **tauri icon** command. Regenerate into a temporary D: directory and copy those four outputs into **src-tauri/icons**; rebuild both the executable and NSIS installer after changing icons.
 
 The Windows GitHub Actions workflow runs the frontend/native tests, builds an optimized executable and installer, and checks installation, Start menu/PATH registration, uninstallation, and draft-data preservation on a clean Windows runner. Every main-branch build uploads downloadable artifacts. A version tag matching the app version (for example **v0.1.0**) also creates a draft GitHub Release with the installer, portable executable, and checksums; publish it after final verification.
 

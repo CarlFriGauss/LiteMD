@@ -26,6 +26,7 @@ import {
 } from './lib/editorHelpers';
 import { EditorMirror } from './lib/editorMirror';
 import { SessionStartup } from './lib/sessionStartup';
+import { bindBlockPresentation, blockPresentation, deactivatePresentationRoot, documentResources, prepareDocumentRoot, releaseBlockPresentation, type BlockPresentation, type RenderDocument } from './lib/documentResources';
 import {
   LiteMDThemeConfig,
   THEME_PRESETS,
@@ -52,7 +53,7 @@ import {
 type EngineMode = 'engine-a' | 'engine-b';
 type SplitLayoutMode = 'split' | 'preview-only' | 'editor-only';
 
-interface DocumentTab {
+interface DocumentTab extends RenderDocument {
   id: string;
   title: string;
   filePath: string | null;
@@ -449,7 +450,8 @@ function getActiveTab(): DocumentTab {
 }
 
 function saveActiveTabSnapshot(): void {
-  const tab = getActiveTab();
+  // During active-tab removal there is deliberately no current tab to snapshot.
+  const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
   if (!tab) return;
   tab.markdown = state.markdown;
   tab.filePath = state.filePath;
@@ -569,6 +571,12 @@ function closeTab(tabId: string): void {
     return;
   }
 
+  tab.resources?.dispose();
+  delete tab.resources;
+  if (tab.id === state.activeTabId) {
+    elPreviewSheet.removeAttribute('data-litemd-document');
+    elInlineCanvas.removeAttribute('data-litemd-document');
+  }
   if (state.tabs.length === 1) {
     // Reset the sole remaining tab to a fresh untitled buffer
     const seq = state.nextTabSeq++;
@@ -733,10 +741,24 @@ function syncEditorBackdropAndGutter(): void {
 /**
  * Updates the live preview using our Dirty-Region Block Reconciler.
  */
+let lastPreviewDocument: DocumentTab | undefined;
+let lastPreviewEngine: EngineMode | undefined;
 function updateLivePreview(): void {
   const t0 = performance.now();
+  const document = getActiveTab();
+  document.filePath = state.filePath;
+  if (lastPreviewDocument !== document) {
+    prepareDocumentRoot(elPreviewSheet, document, state.engineMode !== 'engine-a');
+    prepareDocumentRoot(elInlineCanvas, document, true);
+    lastPreviewDocument?.resources?.suspend();
+    document.resources?.resume();
+  } else if (lastPreviewEngine !== state.engineMode && document.resources) {
+    deactivatePresentationRoot(state.engineMode === 'engine-a' ? elInlineCanvas : elPreviewSheet);
+  }
+  lastPreviewDocument = document;
+  lastPreviewEngine = state.engineMode;
   if (state.engineMode === 'engine-a') {
-    state.renderedBlocks = renderIncrementalPreview(elPreviewSheet, state.markdown);
+    state.renderedBlocks = renderIncrementalPreview(elPreviewSheet, state.markdown, document);
   } else {
     renderEngineBInlineCanvas();
   }
@@ -937,15 +959,45 @@ elPreviewScroller.addEventListener(
  * ============================================================================ */
 function renderEngineBInlineCanvas(): void {
   const blocks = splitIntoLogicalBlocks(state.markdown);
-  elInlineCanvas.innerHTML = '';
+  const documentContext = getActiveTab();
+  documentContext.filePath = state.filePath;
+  prepareDocumentRoot(elInlineCanvas, documentContext);
+  const previousChildren = Array.from(elInlineCanvas.children) as HTMLElement[];
 
   if (blocks.length === 0) {
     blocks.push({ startLine: 0, endLine: 1, raw: '# New Note', hash: 'init' });
   }
 
   blocks.forEach((blk, idx) => {
+    const existing = previousChildren[idx];
+    const wasEditing = existing?.classList.contains('is-editing') || false;
+    const editing = state.activeInlineBlockIdx === idx;
+    const oldMetadata = existing && blockPresentation(existing);
+    const documentKey = oldMetadata?.features ? documentContext.resources?.domKey || '' : '';
+    if (existing?.getAttribute('data-content-hash') === blk.hash && existing.getAttribute('data-document-key') === documentKey && wasEditing === editing && (!editing || Number(existing.getAttribute('data-line')) === blk.startLine)) {
+      const previousLine = Number(existing.getAttribute('data-line') || 0);
+      const delta = blk.startLine - previousLine;
+      existing.setAttribute('data-line', String(blk.startLine));
+      existing.setAttribute('data-source-line', String(blk.startLine));
+      existing.setAttribute('data-line-end', String(blk.endLine));
+      if (delta) for (const inner of Array.from(existing.querySelectorAll<HTMLElement>('[data-line]'))) {
+        inner.setAttribute('data-line', String(Number(inner.getAttribute('data-line')) + delta));
+        inner.setAttribute('data-source-line', inner.getAttribute('data-line')!);
+        if (inner.hasAttribute('data-line-end')) inner.setAttribute('data-line-end', String(Number(inner.getAttribute('data-line-end')) + delta));
+      }
+      return;
+    }
+    const previousBinding = existing && releaseBlockPresentation(existing);
+    const metadata: BlockPresentation = { features:0 };
+    const rendered = renderMarkdown(blk.raw, metadata, blk.startLine);
     const wrapper = document.createElement('div');
     wrapper.className = 'litemd-inline-block';
+    wrapper.setAttribute('data-content-hash', blk.hash);
+    wrapper.setAttribute('data-document-key', metadata.features ? documentResources(documentContext).domKey : '');
+    wrapper.setAttribute('data-line', String(blk.startLine));
+    wrapper.setAttribute('data-source-line', String(blk.startLine));
+    wrapper.setAttribute('data-line-end', String(blk.endLine));
+    if (existing) existing.replaceWith(wrapper); else elInlineCanvas.appendChild(wrapper);
 
     if (state.activeInlineBlockIdx === idx) {
       wrapper.classList.add('is-editing');
@@ -1029,13 +1081,13 @@ function renderEngineBInlineCanvas(): void {
 
       wrapper.appendChild(badge);
       wrapper.appendChild(ta);
-      elInlineCanvas.appendChild(wrapper);
+      bindBlockPresentation(wrapper, documentContext, metadata, previousBinding);
       requestAnimationFrame(() => {
         autoSize();
         ta.focus();
       });
     } else {
-      wrapper.innerHTML = renderMarkdown(blk.raw);
+      wrapper.innerHTML = rendered;
       wrapper.title = 'Click to edit raw Markdown / LaTeX source in place';
       wrapper.addEventListener('click', (ev) => {
         // Ignore clicks on links or checkboxes
@@ -1044,10 +1096,14 @@ function renderEngineBInlineCanvas(): void {
         state.activeInlineBlockIdx = idx;
         renderEngineBInlineCanvas();
       });
-      elInlineCanvas.appendChild(wrapper);
+      bindBlockPresentation(wrapper, documentContext, metadata, previousBinding);
     }
   });
 
+  while (elInlineCanvas.children.length > blocks.length) {
+    releaseBlockPresentation(elInlineCanvas.lastElementChild as HTMLElement);
+    elInlineCanvas.lastElementChild?.remove();
+  }
   // Tail button to append a new block in Engine B
   const addBtn = document.createElement('button');
   addBtn.className = 'litemd-btn';
@@ -1224,10 +1280,12 @@ async function handleSaveFile(forceSaveAs = false): Promise<void> {
 
   try {
     const mtime = await saveMarkdownFile(targetPath, state.markdown);
+    const pathChanged = state.filePath !== targetPath;
     state.filePath = targetPath;
     state.lastSavedMtime = mtime;
     state.isDirty = false;
     syncToolbarAndTitle();
+    if (pathChanged) updateLivePreview();
   } catch (err) {
     alert(`Failed to save "${targetPath}":\n${String(err)}`);
   }
@@ -1254,6 +1312,7 @@ window.setInterval(async () => {
         if (tab.id === state.activeTabId) state.lastSavedMtime = mtime;
         if (content !== tab.markdown) {
           tab.markdown = content;
+          if (tab.id !== state.activeTabId) { tab.resources?.dispose(); delete tab.resources; }
           if (tab.id === state.activeTabId) {
             state.markdown = content;
             state.lastSavedMtime = mtime;

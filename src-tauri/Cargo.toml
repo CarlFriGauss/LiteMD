@@ -1,6 +1,6 @@
 [package]
 name = "litemd"
-version = "0.1.0"
+version = "0.1.1"
 description = "LiteMD — Ultra-Lightweight Live-Preview Markdown & Math Editor"
 authors = ["LiteMD Systems Engineering"]
 edition = "2021"

@@ -564,6 +564,19 @@
   border-radius: 2px;
 }
 
+/* Optional document presentation is clipped to its page, never the application shell. */
+[data-litemd-document] {
+  contain: layout paint style;
+}
+[data-litemd-document] img {
+  max-width: 100%;
+  height: auto;
+}
+[data-litemd-document] .litemd-image-unavailable {
+  border: 1px dashed currentColor;
+  padding: 4px;
+}
+
 .litemd-preview-sheet h1,
 .litemd-preview-sheet h2,
 .litemd-preview-sheet h3,

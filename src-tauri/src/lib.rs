@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
+mod document_images;
 
 #[derive(Serialize)]
 pub struct ThemeEntry {
@@ -723,6 +724,14 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol(
+            "litemd-image",
+            |_context, request, responder| {
+                tauri::async_runtime::spawn_blocking(move || {
+                    responder.respond(document_images::respond(request))
+                });
+            },
+        )
         .invoke_handler(tauri::generate_handler![
             read_markdown_file,
             save_markdown_file,
@@ -735,6 +744,8 @@ pub fn run() {
             save_session_state,
             load_session_state,
             open_external_url,
+            document_images::sync_document_images,
+            document_images::release_document_images,
         ])
         .run(tauri::generate_context!())
         .expect("fatal error while running LiteMD Tauri application");

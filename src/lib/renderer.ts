@@ -11,13 +11,16 @@
 
 import MarkdownIt from 'markdown-it';
 import katex from 'katex';
+import { hasPresentation, imageMarkup, imageSource, IMAGE_FEATURE, sanitizePresentation } from './presentation';
+import { presentationBlockEnd } from './htmlBlocks';
+import { bindBlockPresentation, documentResources, prepareDocumentRoot, releaseBlockPresentation, type BlockPresentation, type RenderDocument } from './documentResources';
 import {
   normalizeMathAndCode,
   ExtractedMathToken,
   ExtractedCodeToken,
 } from './mathNormalizer';
 
-export interface LogicalBlock {
+export interface LogicalBlock extends BlockPresentation {
   index: number;
   startLine: number;
   endLine: number;
@@ -100,7 +103,8 @@ const katexMemoCache = new Map<string, { html: string; hasError: boolean }>();
 const MAX_KATEX_CACHE_ENTRIES = 4096;
 
 // Level-2 Dirty-Block Cache: Block FNV-1a hash (relative to line 0) -> rendered HTML
-const blockMemoCache = new Map<string, string>();
+interface RenderedChunk extends BlockPresentation { html: string }
+const blockMemoCache = new Map<string, RenderedChunk>();
 const MAX_BLOCK_CACHE_ENTRIES = 2048;
 
 let blockCacheHits = 0;
@@ -198,6 +202,57 @@ function createMarkdownItEngine(): MarkdownIt {
   // Enable GFM tables and strikethrough explicitly
   md.enable(['table', 'strikethrough']);
 
+  function attributeRestore(value: string, env: { mathTokens?: ExtractedMathToken[]; codeTokens?: ExtractedCodeToken[] }): string {
+    return value.replace(/LITEMD(MATH|CODE)(?:BLOCK|INLINE)(\d+)END/g, (token, kind: string, id: string) =>
+      (kind === 'MATH' ? env.mathTokens?.[Number(id)]?.rawSource : env.codeTokens?.[Number(id)]?.code) ?? token);
+  }
+  md.renderer.rules.image = (tokens, idx, options, env, renderer) => {
+    const token = tokens[idx], source = attributeRestore(token.attrGet('src') || '', env);
+    env.features |= IMAGE_FEATURE;
+    if (imageSource(source) === 'local') (env.images ??= []).push(source);
+    const children = token.children || [];
+    const alt = children.some(child => child.type === 'code_inline')
+      ? children.map(child => child.type === 'code_inline' ? child.content : renderer.renderInlineAsText([child], options, env)).join('')
+      : renderer.renderInlineAsText(children, options, env);
+    return imageMarkup(source, alt, token.attrGet('title') || '', value => attributeRestore(value, env));
+  };
+  for (const type of ['html_block', 'html_inline']) {
+    md.renderer.rules[type] = (tokens, idx, _options, env) => {
+      const result = sanitizePresentation(tokens[idx].content, type === 'html_inline', value => attributeRestore(value, env));
+      env.features |= result.features;
+      if (result.images?.length) (env.images ??= []).push(...result.images);
+      return result.html;
+    };
+  }
+  // Compatibility extension for relative image filenames with unbracketed spaces.
+  // Standard destinations/titles continue through markdown-it's existing image rule.
+  md.inline.ruler.before('image', 'litemd_image_spaces', (state, silent) => {
+    const start = state.pos;
+    if (state.src.slice(start, start + 2) !== '![') return false;
+    const labelEnd = state.md.helpers.parseLinkLabel(state, start + 1, false);
+    if (labelEnd < 0 || state.src[labelEnd + 1] !== '(') return false;
+    let end = labelEnd + 2, depth = 1;
+    for (; end < state.posMax && end - start < 4096; end++) {
+      const char = state.src[end];
+      if (char === '\n') return false;
+      if (char === '\\') { end++; continue; }
+      if (char === '(') depth++;
+      if (char === ')' && --depth === 0) break;
+    }
+    if (depth || end >= state.posMax) return false;
+    const source = state.src.slice(labelEnd + 2, end).trim();
+    if (!source.includes(' ') || /\s+["'(]/.test(source) || imageSource(source) !== 'local') return false;
+    if (!silent) {
+      const token = state.push('image', 'img', 0);
+      token.attrs = [['src', state.md.normalizeLink(source)], ['alt', '']];
+      token.children = [];
+      token.content = state.src.slice(start + 2, labelEnd);
+      state.md.inline.parse(token.content, state.md, state.env, token.children);
+    }
+    state.pos = end + 1;
+    return true;
+  });
+
   // Inject `dir="auto"`, `data-line`, and `data-source-line` attributes on block-level openings
   const blockRules = [
     'paragraph_open',
@@ -256,6 +311,8 @@ function enhanceGfmTaskListsAndFootnotes(
   let processed = html.replace(
     /(<li[^>]*>\s*(?:<p[^>]*>)?)\s*\[([ xX])\]\s+/g,
     (_m, liOpen: string, state: string) => {
+      // Author HTML lists are presentation; only Markdown list items are interactive tasks.
+      if (liOpen.includes('data-litemd-presentation')) return _m;
       const checked = state.toLowerCase() === 'x';
       const liTagged = liOpen.replace('<li', '<li class="litemd-task-item"');
       return `${liTagged}<input type="checkbox" class="litemd-task-checkbox" ${
@@ -362,14 +419,14 @@ function renderSingleChunk(
   rawChunk: string,
   lineOffset: number,
   footnotesMap: Map<string, string>
-): string {
+): RenderedChunk {
   // Strip footnote definitions before normalizing so `footnotesMap` retains raw un-tokenized Markdown
   const chunkWithoutFootnoteDefs = rawChunk.replace(
     /^\[\^([^\]]+)\]:[ \t]*(.+)$/gm,
     ''
   );
   if (chunkWithoutFootnoteDefs.trim().length === 0) {
-    return '';
+    return { html: '', features: 0 };
   }
 
   // Steps 1 & 2: Protect Code Blocks + Extract & Normalize Math
@@ -377,7 +434,11 @@ function renderSingleChunk(
     normalizeMathAndCode(chunkWithoutFootnoteDefs);
 
   // Step 3: Parse Markdown via markdown-it with `lineOffset` injected into `data-line`
-  let html = mdEngine.render(normalizedMarkdown, { lineOffset });
+  const env = { lineOffset, features: 0, images: undefined as string[] | undefined, mathTokens, codeTokens };
+  mdEngine.options.html = hasPresentation(normalizedMarkdown);
+  let html: string;
+  try { html = mdEngine.render(normalizedMarkdown, env); }
+  finally { mdEngine.options.html = false; }
 
   // Enhance GFM task lists and footnote references
   html = enhanceGfmTaskListsAndFootnotes(html, footnotesMap);
@@ -385,7 +446,7 @@ function renderSingleChunk(
   // Steps 4 & 5: Restore & Render Math with KaTeX + Restore Code Blocks
   html = restoreMathAndCodePlaceholders(html, mathTokens, codeTokens);
 
-  return html;
+  return { html, features: env.features, images: env.images };
 }
 
 /**
@@ -415,6 +476,7 @@ export function splitIntoLogicalBlocks(
   let inDollarBlock = false;
   let inBracketBlock = false;
   let activeEnvName: string | null = null;
+  let htmlEnd = -1;
 
   const flushBlock = (endLineIdx: number) => {
     if (currentLines.length === 0) return;
@@ -460,6 +522,10 @@ export function splitIntoLogicalBlocks(
     }
 
     if (inFence) continue;
+    if (!inDollarBlock && !inBracketBlock && !activeEnvName && i > htmlEnd && trimmed.startsWith('<')) {
+      htmlEnd = presentationBlockEnd(lines, i);
+    }
+    if (i < htmlEnd) continue;
 
     // Strip inline code spans (`...`) and same-line Markdown escaped brackets (`\[text]`)
     // before checking math block delimiters so `` `$$` ``, `` `\[` ``, or `\[text]` never flips block state!
@@ -546,7 +612,7 @@ function renderBlockCached(
   blk: { startLine: number; endLine: number; raw: string; hash: string },
   footnotesMap: Map<string, string>,
   footnotesSig: string
-): { contentKey: string; html: string } {
+): RenderedChunk & { contentKey: string } {
   const contentKey = `${blk.hash}:${footnotesSig}`;
   let relativeHtml = blockMemoCache.get(contentKey);
 
@@ -564,7 +630,9 @@ function renderBlockCached(
 
   return {
     contentKey,
-    html: shiftHtmlLineOffsets(relativeHtml, blk.startLine),
+    html: shiftHtmlLineOffsets(relativeHtml.html, blk.startLine),
+    features: relativeHtml.features,
+    images: relativeHtml.images,
   };
 }
 
@@ -572,7 +640,7 @@ function renderBlockCached(
  * Full 5-stage Markdown + Math renderer with Line-Number-Independent Dirty-Block Memoization.
  * Used by both Engine A, Engine B, and automated test suites.
  */
-export function renderMarkdown(markdown: string): string {
+export function renderMarkdown(markdown: string, metadata?: BlockPresentation, lineOffset = 0): string {
   if (!markdown || markdown.trim().length === 0) {
     return '';
   }
@@ -589,13 +657,17 @@ export function renderMarkdown(markdown: string): string {
   const htmlParts: string[] = [];
 
   for (let i = 0; i < rawBlocks.length; i++) {
-    const { html: blockHtml } = renderBlockCached(
+    const { html: blockHtml, features, images } = renderBlockCached(
       rawBlocks[i],
       footnotesMap,
       footnotesSig
     );
+    if (metadata) {
+      metadata.features |= features;
+      if (images?.length) (metadata.images ??= []).push(...images);
+    }
     if (blockHtml.trim().length > 0) {
-      htmlParts.push(blockHtml);
+      htmlParts.push(shiftHtmlLineOffsets(blockHtml, lineOffset));
     }
   }
 
@@ -603,7 +675,12 @@ export function renderMarkdown(markdown: string): string {
     const items: string[] = [];
     footnotesMap.forEach((body, id) => {
       const safeId = escapeHtml(id);
-      const renderedBody = renderSingleChunk(body, 0, new Map());
+      const rendered = renderSingleChunk(body, 0, new Map());
+      const renderedBody = rendered.html;
+      if (metadata) {
+        metadata.features |= rendered.features;
+        if (rendered.images?.length) (metadata.images ??= []).push(...rendered.images);
+      }
       items.push(
         `<li id="fn-${safeId}" class="litemd-footnote-item" dir="auto">${renderedBody} <a href="#fnref-${safeId}" class="litemd-footnote-backref">↩</a></li>`
       );
@@ -625,8 +702,10 @@ export function renderMarkdown(markdown: string): string {
  */
 export function renderIncrementalPreview(
   container: HTMLElement,
-  markdown: string
+  markdown: string,
+  documentContext?: RenderDocument
 ): LogicalBlock[] {
+  if (documentContext) prepareDocumentRoot(container, documentContext);
   const hasFootnotes = /^\[\^[^\]]+\]:/m.test(markdown);
   const footnotesMap = new Map<string, string>();
   let footnotesSig = '0';
@@ -640,7 +719,7 @@ export function renderIncrementalPreview(
 
   for (let i = 0; i < rawBlocks.length; i++) {
     const blk = rawBlocks[i];
-    const { contentKey, html: blockHtml } = renderBlockCached(
+    const { contentKey, html: blockHtml, features, images } = renderBlockCached(
       blk,
       footnotesMap,
       footnotesSig
@@ -651,17 +730,24 @@ export function renderIncrementalPreview(
       startLine: blk.startLine,
       endLine: blk.endLine,
       raw: blk.raw,
-      hash: contentKey,
+      hash: documentContext && features ? contentKey + ':' + documentResources(documentContext).domKey : contentKey,
       html: blockHtml,
+      features,
+      images,
     };
   }
 
   // Append footnotes block if present
   if (footnotesMap.size > 0) {
     const items: string[] = [];
+    let features = 0;
+    let images: string[] | undefined;
     footnotesMap.forEach((body, id) => {
       const safeId = escapeHtml(id);
-      const renderedBody = renderSingleChunk(body, 0, new Map());
+      const rendered = renderSingleChunk(body, 0, new Map());
+      const renderedBody = rendered.html;
+      features |= rendered.features;
+      if (rendered.images?.length) (images ??= []).push(...rendered.images);
       items.push(
         `<li id="fn-${safeId}" class="litemd-footnote-item" dir="auto">${renderedBody} <a href="#fnref-${safeId}" class="litemd-footnote-backref">↩</a></li>`
       );
@@ -674,8 +760,10 @@ export function renderIncrementalPreview(
       startLine: lastLine,
       endLine: lastLine + 1,
       raw: '',
-      hash: `fn:${fnv1aHash(fnHtml)}`,
+      hash: `fn:${fnv1aHash(fnHtml)}` + (documentContext && features ? ':' + documentResources(documentContext).domKey : ''),
       html: fnHtml,
+      features,
+      images,
     });
   }
 
@@ -695,12 +783,15 @@ export function renderIncrementalPreview(
       wrapper.setAttribute('data-line-end', String(blk.endLine));
       wrapper.innerHTML = blk.html;
       container.appendChild(wrapper);
+      if (documentContext && blk.features) bindBlockPresentation(wrapper, documentContext, blk);
     } else if (existingEl.getAttribute('data-block-hash') !== blk.hash) {
       existingEl.setAttribute('data-block-hash', blk.hash);
       existingEl.setAttribute('data-line', String(blk.startLine));
       existingEl.setAttribute('data-source-line', String(blk.startLine));
       existingEl.setAttribute('data-line-end', String(blk.endLine));
+      const previous = releaseBlockPresentation(existingEl);
       existingEl.innerHTML = blk.html;
+      if (documentContext && blk.features) bindBlockPresentation(existingEl, documentContext, blk, previous);
     } else if (existingEl.getAttribute('data-line') !== String(blk.startLine)) {
       // Content hash is 100% identical; only line offset shifted (e.g. Enter pressed above).
       // Update wrapper line attributes and inner child line attributes without rebuilding DOM/KaTeX!
@@ -727,6 +818,7 @@ export function renderIncrementalPreview(
 
   // Remove any stale trailing DOM blocks if the document shrank
   while (container.children.length > resultBlocks.length) {
+    releaseBlockPresentation(container.lastElementChild as HTMLElement);
     container.removeChild(container.lastElementChild!);
   }
 

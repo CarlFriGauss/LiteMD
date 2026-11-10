@@ -34,6 +34,35 @@ export interface NormalizationResult {
   codeTokens: ExtractedCodeToken[];
 }
 
+// Strip only the opening blockquote's depth, and only from subsequent payload lines.
+// An ordinary greater-than relation inside mathematics is never a quote delimiter.
+function quoteDepth(input: string, at: number): number {
+  let cursor = input.lastIndexOf('\n', at - 1) + 1, depth = 0;
+  while (cursor < at) {
+    while (input[cursor] === ' ' || input[cursor] === '\t') cursor++;
+    if (input[cursor] !== '>') break;
+    depth++; cursor++;
+  }
+  return depth;
+}
+function withoutQuoteMarkers(payload: string, depth: number): string {
+  if (!depth || !payload.includes('\n')) return payload;
+  return payload.split('\n').map((line, index) => {
+    if (!index) return line;
+    let cursor = 0;
+    for (let i = 0; i < depth; i++) {
+      while (line[cursor] === ' ' || line[cursor] === '\t') cursor++;
+      if (line[cursor] !== '>') return line;
+      cursor++;
+      if (line[cursor] === ' ') cursor++;
+    }
+    return line.slice(cursor);
+  }).join('\n');
+}
+function quotedPlaceholder(placeholder: string, rawSource: string, depth: number): string {
+  return depth ? placeholder + ('\n' + '> '.repeat(depth)).repeat(countNewlines(rawSource)) : placeholder;
+}
+
 const RAW_ENV_REGEX =
   /\\begin\{(equation\*?|align\*?|aligned|gather\*?|gathered|bmatrix|pmatrix|vmatrix|Bmatrix|Vmatrix|matrix|cases|split|multline\*?)\}([\s\S]*?)\\end\{\1\}/g;
 
@@ -205,7 +234,8 @@ function extractDoubleDollarDisplayMath(
     if (closeIdx === -1) {
       // Fault-tolerant recovery (Rule 5): unclosed `$$` block at end of text
       const rawSource = input.slice(openIdx);
-      const innerRaw = input.slice(openIdx + 2);
+      const depth = quoteDepth(input, openIdx);
+      const innerRaw = withoutQuoteMarkers(input.slice(openIdx + 2), depth);
       const id = mathTokens.length;
       const placeholder = `LITEMDMATHBLOCK${id}END`;
       mathTokens.push({
@@ -216,13 +246,14 @@ function extractDoubleDollarDisplayMath(
         displayMode: true,
         incomplete: true,
       });
-      result += placeholder;
+      result += quotedPlaceholder(placeholder, rawSource, depth);
       cursor = len;
       break;
     }
 
     const rawSource = input.slice(openIdx, closeIdx + 2);
-    const innerRaw = input.slice(openIdx + 2, closeIdx);
+    const depth = quoteDepth(input, openIdx);
+    const innerRaw = withoutQuoteMarkers(input.slice(openIdx + 2, closeIdx), depth);
     const { latex, incomplete } = normalizeLatexPayload(innerRaw);
     const id = mathTokens.length;
     const placeholder = `LITEMDMATHBLOCK${id}END`;
@@ -235,7 +266,7 @@ function extractDoubleDollarDisplayMath(
       incomplete,
     });
 
-    result += placeholder;
+    result += quotedPlaceholder(placeholder, rawSource, depth);
     cursor = closeIdx + 2;
   }
 
@@ -264,11 +295,12 @@ function extractBackslashDelimitedMath(
       openIdx = i;
     } else if (escaped === closing && openIdx >= 0) {
       const rawSource = input.slice(openIdx, i + 2);
-      const { latex, incomplete } = normalizeLatexPayload(input.slice(openIdx + 2, i));
+      const depth = displayMode ? quoteDepth(input, openIdx) : 0;
+      const { latex, incomplete } = normalizeLatexPayload(withoutQuoteMarkers(input.slice(openIdx + 2, i), depth));
       const id = mathTokens.length;
       const placeholder = `LITEMDMATH${displayMode ? 'BLOCK' : 'INLINE'}${id}END`;
       mathTokens.push({ id, placeholder, latex, rawSource, displayMode, incomplete });
-      result += input.slice(cursor, openIdx) + placeholder;
+      result += input.slice(cursor, openIdx) + quotedPlaceholder(placeholder, rawSource, depth);
       cursor = i + 2;
       openIdx = -1;
     }
@@ -418,8 +450,9 @@ export function normalizeMathAndCode(markdown: string): NormalizationResult {
   text = extractBackslashDelimitedMath(text, mathTokens, 40 /* ( */, 41 /* ) */, false);
 
   // Step 2D: Standalone environments not already wrapped in a math delimiter.
-  text = text.replace(RAW_ENV_REGEX, (rawSource) => {
-    const { latex, incomplete } = normalizeLatexPayload(rawSource);
+  text = text.replace(RAW_ENV_REGEX, (rawSource, _environment, _body, offset: number) => {
+    const depth = quoteDepth(text, offset);
+    const { latex, incomplete } = normalizeLatexPayload(withoutQuoteMarkers(rawSource, depth));
     const id = mathTokens.length;
     const placeholder = `LITEMDMATHBLOCK${id}END`;
     mathTokens.push({
@@ -430,7 +463,7 @@ export function normalizeMathAndCode(markdown: string): NormalizationResult {
       displayMode: true,
       incomplete,
     });
-    return placeholder;
+    return quotedPlaceholder(placeholder, rawSource, depth);
   });
 
   // Step 2E: Inline math `$ ... $` (supports optional inner whitespace and `|` inside GFM table cells)
